@@ -259,15 +259,11 @@ def get_tensor_metrics(x, y, risk_free_rate=0.0):
     ret_s_mean = (ret_s).mean().item()
     ret_s_std = (ret_s).std().item() if (ret_s).std().item() > 1e-6 else 1.0
 
-    # Calculate Sharpe Ratio and Maximum Drawdown using non-overlapping returns.
-    # ret_s is derived from label_days-day forward returns, so consecutive entries
-    # are highly autocorrelated (overlapping windows). Using them directly deflates
-    # variance by ~label_days and inflates Sharpe by ~sqrt(label_days).
-    # Sampling every label_days steps yields non-overlapping, independent observations.
-    ret_s_nonoverlap = ret_s[::args.label_days]
-    ret_sharpe = batch_sharpe_ratio(ret_s_nonoverlap, risk_free_rate).item()
-    ret_mdd = batch_max_drawdown(ret_s_nonoverlap).item()
-
+    # ret_s = N-day forward return / N, so E[X]=μ but std(X)=σ/√N.
+    # batch_sharpe_ratio annualizes with √252; divide by √N to recover daily SR.
+    # MDD uses the full series: cumsum(X) reconstructs the daily equity curve.
+    ret_sharpe = batch_sharpe_ratio(ret_s, risk_free_rate).item() / (args.label_days ** 0.5)
+    ret_mdd = batch_max_drawdown(ret_s).item()
     result = dict(
         ic=ic_s_mean,
         ic_std=ic_s_std,
@@ -302,6 +298,7 @@ def run(args):
     train_end_time = f'{args.train_end_year}-12-31'
     valid_start_time = f'{args.train_end_year + 1}-01-01'
     valid_end_time = f'{args.train_end_year + 1}-12-31'
+
     test_start_time = '2023-01-01'
     test_end_time = '2026-04-30'
 
