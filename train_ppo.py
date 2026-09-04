@@ -94,11 +94,7 @@ class CustomCallback(BaseCallback):
 
 def run(args):
     reseed_everything(args.seed)
-
-    if args.instruments == 'sp500':
-        QLIB_PATH = '/your_path/data/qlib_data/us_data_qlib'
-    else:
-        QLIB_PATH = '/your_path/data/qlib_data/cn_data_rolling'
+    QLIB_PATH = "data/qlib_data/us_data_qlib" if args.instruments == 'sp500' else "data/qlib_data/cn_data_rolling"
     device = torch.device('cuda')
     close = Feature(FeatureType.CLOSE)
     target = Ref(close, -20) / close - 1
@@ -106,15 +102,15 @@ def run(args):
     # You can re-implement AlphaCalculator instead of using QLibStockDataCalculator.
     data_train = StockData(instrument=args.instruments,
                            start_time='2010-01-01',
-                           end_time='2020-12-31',
-                           qlib_path = QLIB_PATH)
-    data_valid = StockData(instrument=args.instruments,
-                           start_time='2021-01-01',
                            end_time='2021-12-31',
                            qlib_path = QLIB_PATH)
+    data_valid = StockData(instrument=args.instruments,
+                           start_time='2022-01-01',
+                           end_time='2022-12-31',
+                           qlib_path = QLIB_PATH)
     data_test = StockData(instrument=args.instruments,
-                          start_time='2022-01-01',
-                          end_time='2024-12-31',
+                          start_time='2023-01-01',
+                          end_time='2026-04-30',
                           qlib_path = QLIB_PATH)
     # calculator_train = QLibStockDataCalculator(data_train, target)
     # calculator_valid = QLibStockDataCalculator(data_valid, target)

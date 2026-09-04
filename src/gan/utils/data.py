@@ -5,7 +5,7 @@ from alphagen.data.expression import *
 
 import os
 def get_data_by_year(
-    train_start = 2010,train_end=2019,valid_year=2020,test_year =2021,
+    train_start = 2010,train_end=2021,valid_year=2022,test_year =2023,
     instruments=None, target=None,freq=None,qlib_path=None,
                     ):
     
@@ -15,7 +15,7 @@ def get_data_by_year(
 
     train_dates=(f"{train_start}-01-01", f"{train_end}-12-31")
     val_dates=(f"{valid_year}-01-01", f"{valid_year}-12-31")
-    test_dates=(f"{test_year}-01-01", f"{test_year+2}-12-31")
+    test_dates=(f"{test_year}-01-01", f"{test_year+3}-04-30")
 
     train_start,train_end = train_dates
     valid_start,valid_end = val_dates

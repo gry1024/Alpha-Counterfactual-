@@ -128,7 +128,7 @@ celerybeat.pid
 *.sage.py
 
 # Environments
-# .env
+.env
 .venv
 # env/
 # venv/
@@ -218,3 +218,7 @@ eval.sh
 run.sh
 run_grid_search.sh
 grid_search_config.py
+
+# md
+QuickStart.md
+idea.md

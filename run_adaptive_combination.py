@@ -1,4 +1,4 @@
-import torch 
+import torch
 import os
 from gan.utils import load_pickle
 from alphagen_generic.features import *
@@ -294,10 +294,7 @@ def run(args):
         window = float('inf')
 
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.cuda)
-    if args.instruments == 'sp500':
-        QLIB_PATH = '/your_path/data/qlib_data/us_data_qlib'
-    else:
-        QLIB_PATH = '/your_path/data/qlib_data/cn_data_rolling'
+    QLIB_PATH = "data/qlib_data/us_data_qlib" if args.instruments == 'sp500' else "data/qlib_data/cn_data_rolling"
     # 1. Define Target and Load Data
     close = Feature(FeatureType.CLOSE)
     target = Ref(close, -args.label_days) / close - 1
@@ -305,8 +302,8 @@ def run(args):
     train_end_time = f'{args.train_end_year}-12-31'
     valid_start_time = f'{args.train_end_year + 1}-01-01'
     valid_end_time = f'{args.train_end_year + 1}-12-31'
-    test_start_time = f'{args.train_end_year + 2}-01-01'
-    test_end_time = f'{args.train_end_year + 4}-12-31'
+    test_start_time = '2023-01-01'
+    test_end_time = '2026-04-30'
 
     data_all = StockData(instrument=args.instruments,
                          start_time='2010-01-01',
@@ -503,7 +500,7 @@ if __name__ == '__main__':
     parser.add_argument('--expressions_file', type=str, required=True,
                         help='Path to a JSON file containing a list of alpha expressions.')
     parser.add_argument('--instruments', type=str, default='csi300')
-    parser.add_argument('--train_end_year', type=int, default=2020)
+    parser.add_argument('--train_end_year', type=int, default=2021)
     parser.add_argument('--threshold_ric', type=float, default=0.015)
     parser.add_argument('--threshold_ricir', type=float, default=0.15)
     parser.add_argument('--seed', type=int, default=0)

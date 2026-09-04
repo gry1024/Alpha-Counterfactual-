@@ -1,4 +1,4 @@
-import torch 
+import torch
 import os
 os.environ["CUDA_VISIBLE_DEVICES"]='1'
 from gan.utils import load_pickle
@@ -10,8 +10,6 @@ from typing import Union
 from gan.utils.data import get_data_by_year
 import argparse
 from datetime import datetime
-
-QLIB_PATH = '/your_path/data/qlib_data/cn_data_rolling'
 
 def load_alpha_pool(raw) -> Tuple[List[Expression], List[float]]:
     exprs_raw = raw['exprs']
@@ -110,6 +108,7 @@ def run(args):
         window = float('inf')
 
     os.environ["CUDA_VISIBLE_DEVICES"]=str(args.cuda)
+    QLIB_PATH = "data/qlib_data/cn_data_rolling"
 
     close = Feature(FeatureType.CLOSE)
     target = Ref(close, -20) / close - 1
@@ -118,8 +117,9 @@ def run(args):
     train_end_time = f'{args.train_end_year}-12-31'
     valid_start_time = f'{args.train_end_year + 1}-01-01'
     valid_end_time = f'{args.train_end_year + 1}-12-31'
-    test_start_time = f'{args.train_end_year + 2}-01-01'
-    test_end_time = f'{args.train_end_year + 4}-12-31'
+    
+    test_start_time = '2023-01-01'
+    test_end_time = '2026-04-30'
 
     data_all = StockData(instrument=args.instruments,
                          start_time='2010-01-01',
@@ -279,7 +279,7 @@ def run(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--instruments', type=str, default='csi300')
-    parser.add_argument('--train_end_year', type=int, default=2020)
+    parser.add_argument('--train_end_year', type=int, default=2021)
     parser.add_argument('--freq', type=str, default='day')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--cuda', type=int, default=0)

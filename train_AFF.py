@@ -153,19 +153,16 @@ def get_metric(zoo_blds,device,corr_thresh=0.5,metric_target='ic'):
 def run(args):
     os.environ["CUDA_VISIBLE_DEVICES"]=str(args.cuda)
     reseed_everything(args.seed)
-    if args.instruments == 'sp500':
-        QLIB_PATH = '/your_path/data/qlib_data/us_data_qlib'
-    else:
-        QLIB_PATH = '/your_path/data/qlib_data/cn_data_rolling'
+    QLIB_PATH = "data/qlib_data/us_data_qlib" if args.instruments == 'sp500' else "data/qlib_data/cn_data_rolling"
     close = Feature(FeatureType.CLOSE)
     target = Ref(close, -20) / close - 1
     
     train_start_time = '2010-01-01'
-    train_end_time = '2016-12-31'
-    valid_start_time = '2017-01-01'
-    valid_end_time = '2017-12-31'
-    test_start_time = '2018-01-01'
-    test_end_time = '2020-12-31'
+    train_end_time = '2021-12-31'
+    valid_start_time = '2022-01-01'
+    valid_end_time = '2022-12-31'
+    test_start_time = '2023-01-01'
+    test_end_time = '2026-04-30'
 
     data = StockData(instrument=args.instruments,
                            start_time=train_start_time,
@@ -376,7 +373,7 @@ def run(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--instruments', type=str, default='csi300')
-    parser.add_argument('--train_end_year', type=int, default=2020)
+    parser.add_argument('--train_end_year', type=int, default=2021)
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--cuda', type=int, default=0)
     parser.add_argument('--save_name', type=str, default='test')

@@ -19,8 +19,6 @@ from gplearn.genetic import SymbolicRegressor
 from gan.utils.data import get_data_by_year
 from datetime import datetime
 
-QLIB_PATH = '/your_path/data/qlib_data/us_data_qlib'
-
 def _metric(x, y, w):
     key = y[0]
 
@@ -109,6 +107,7 @@ def ev():
 def run(args):
     os.environ["CUDA_VISIBLE_DEVICES"] = args.cuda
     reseed_everything(args.seed)
+    QLIB_PATH = "data/qlib_data/us_data_qlib" if args.instruments == 'sp500' else "data/qlib_data/cn_data_rolling"
 
     global data, data_valid, data_test, target, target_factor, target_factor_valid, target_factor_test, cache, generation, save_dir
 
@@ -119,8 +118,9 @@ def run(args):
     train_end_time = f'{args.train_end_year}-12-31'
     valid_start_time = f'{args.train_end_year + 1}-01-01'
     valid_end_time = f'{args.train_end_year + 1}-12-31'
-    test_start_time = f'{args.train_end_year + 2}-01-01'
-    test_end_time = f'{args.train_end_year + 4}-12-31'
+    
+    test_start_time = '2023-01-01'
+    test_end_time = '2026-04-30'
 
     data = StockData(instrument=args.instruments,
                            start_time=train_start_time,
