@@ -1,5 +1,7 @@
 # 反事实因子编辑（CounterFactual）
 
+**核心代码位置：** src/alpha_cf/ 以及 train_cf.py
+
 在 AlphaSAGE 种子因子上做最小结构编辑：LLM 提案 → `T(f,a)` → 真回测 Δ → greedy。详见 `dev_plan.md`。
 
 `R(f)=|日均 Pearson IC|`。Train 段固定 `2010-01-01`–`2021-12-31`。
