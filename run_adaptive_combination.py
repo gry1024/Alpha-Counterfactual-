@@ -290,7 +290,7 @@ def run(args):
         window = float('inf')
 
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.cuda)
-    QLIB_PATH = "data/qlib_data/us_data_qlib" if args.instruments == 'sp500' else "data/qlib_data/cn_data_rolling"
+    QLIB_PATH = "data/qlib_data/us_data_qlib_latest" if args.instruments == 'sp500' else "data/qlib_data/cn_data_rolling"
     # 1. Define Target and Load Data
     close = Feature(FeatureType.CLOSE)
     target = Ref(close, -args.label_days) / close - 1

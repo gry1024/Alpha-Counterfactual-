@@ -94,7 +94,7 @@ class CustomCallback(BaseCallback):
 
 def run(args):
     reseed_everything(args.seed)
-    QLIB_PATH = "data/qlib_data/us_data_qlib" if args.instruments == 'sp500' else "data/qlib_data/cn_data_rolling"
+    QLIB_PATH = "data/qlib_data/us_data_qlib_latest" if args.instruments == 'sp500' else "data/qlib_data/cn_data_rolling"
     device = torch.device('cuda')
     close = Feature(FeatureType.CLOSE)
     target = Ref(close, -20) / close - 1

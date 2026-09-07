@@ -220,7 +220,6 @@ run_grid_search.sh
 grid_search_config.py
 
 # md
-Quickstart.md
-idea.md
-result.md
-dev_plan.md
+
+AGENT.md
+TODO.md

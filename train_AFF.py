@@ -153,7 +153,7 @@ def get_metric(zoo_blds,device,corr_thresh=0.5,metric_target='ic'):
 def run(args):
     os.environ["CUDA_VISIBLE_DEVICES"]=str(args.cuda)
     reseed_everything(args.seed)
-    QLIB_PATH = "data/qlib_data/us_data_qlib" if args.instruments == 'sp500' else "data/qlib_data/cn_data_rolling"
+    QLIB_PATH = "data/qlib_data/us_data_qlib_latest" if args.instruments == 'sp500' else "data/qlib_data/cn_data_rolling"
     close = Feature(FeatureType.CLOSE)
     target = Ref(close, -20) / close - 1
     

@@ -107,7 +107,7 @@ def ev():
 def run(args):
     os.environ["CUDA_VISIBLE_DEVICES"] = args.cuda
     reseed_everything(args.seed)
-    QLIB_PATH = "data/qlib_data/us_data_qlib" if args.instruments == 'sp500' else "data/qlib_data/cn_data_rolling"
+    QLIB_PATH = "data/qlib_data/us_data_qlib_latest" if args.instruments == 'sp500' else "data/qlib_data/cn_data_rolling"
 
     global data, data_valid, data_test, target, target_factor, target_factor_valid, target_factor_test, cache, generation, save_dir
 
