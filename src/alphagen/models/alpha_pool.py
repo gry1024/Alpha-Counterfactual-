@@ -195,7 +195,8 @@ class AlphaPool(AlphaPoolBase):
     def _calc_ics(
         self,
         value: Tensor,
-        ic_mut_threshold: Optional[float] = None
+        ic_mut_threshold: Optional[float] = None,
+        expr: Optional[Expression] = None
     ) -> Tuple[Optional[float], Optional[List[float]]]:
         single_ic = batch_pearsonr(value, self.target).mean().item()
         thres = self.ic_lower_bound if self.ic_lower_bound is not None else 0.
@@ -210,6 +211,22 @@ class AlphaPool(AlphaPoolBase):
             mutual_ics.append(mutual_ic)
 
         return single_ic, mutual_ics
+
+    def _calc_ics_and_icir(
+        self,
+        value: Tensor,
+        ic_mut_threshold: Optional[float] = None
+    ) -> Tuple[float, float, List[float]]:
+        pearson_corrs = batch_pearsonr(value, self.target)
+        single_ic = pearson_corrs.mean().item()
+        single_icir = pearson_corrs.mean().item() / (pearson_corrs.std().item() + 1e-6)
+
+        mutual_ics = []
+        for i in range(self.size):
+            mutual_ic = batch_pearsonr(value, self.values[i]).mean().item()  # type: ignore
+            mutual_ics.append(mutual_ic)
+
+        return single_ic, single_icir, mutual_ics
 
     def _add_factor(
         self,

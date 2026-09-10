@@ -1,6 +1,8 @@
 from abc import ABCMeta, abstractmethod
-from typing import List, Type, Union
+from functools import lru_cache
+from typing import List, Optional, Tuple, Type, Union
 
+import math
 import torch
 from torch import Tensor
 
@@ -320,6 +322,22 @@ class Less(BinaryOperator):
         return self._lhs.is_featured and self._rhs.is_featured
 
 
+class GetGreater(BinaryOperator):
+    def _apply(self, lhs: Tensor, rhs: Tensor) -> Tensor: return torch.maximum(lhs, rhs)
+
+    @property
+    def is_featured(self):
+        return self._lhs.is_featured or self._rhs.is_featured
+
+
+class GetLess(BinaryOperator):
+    def _apply(self, lhs: Tensor, rhs: Tensor) -> Tensor: return torch.minimum(lhs, rhs)
+
+    @property
+    def is_featured(self):
+        return self._lhs.is_featured or self._rhs.is_featured
+
+
 class Ref(RollingOperator):
     # Ref is not *really* a rolling operator, in that other rolling operators
     # deal with the values in (-dt, 0], while Ref only deal with the values
@@ -483,3 +501,159 @@ Operators: List[Type[Expression]] = [
     # Pair rolling
     TsCov, TsCorr
 ]
+
+
+def expression_edit_distance(expression_a: Expression, expression_b: Expression) -> int:
+    """
+    Compute the minimum number of edit operations required to turn expression_a into expression_b.
+
+    The cost model follows the rules defined for expression modifications:
+    * Changing a feature or constant leaf to another leaf costs 1.
+    * Switching between operators of the same category (unary, binary, rolling, pair rolling)
+      while keeping operands costs 1.
+    * Adding or removing unary / rolling operators costs 1.
+    * Adding or removing binary / pair rolling operators costs 1 plus the cost of building
+      the additional operand from scratch (token length of that operand).
+    * Building a fresh expression costs its token length.
+    """
+
+    commutative_types: Tuple[Type[Expression], ...] = (Add, Mul, TsCov, TsCorr)
+
+    def _is_leaf(expr: Expression) -> bool:
+        return isinstance(expr, (Feature, Constant))
+
+    def _is_commutative(expr: Expression) -> bool:
+        return isinstance(expr, commutative_types)
+
+    def _swap_penalty(expr: Expression) -> int:
+        return 0 if _is_commutative(expr) else 1
+
+    def _operand(expr: Expression) -> Expression:
+        if isinstance(expr, (UnaryOperator, RollingOperator)):
+            return expr._operand  # type: ignore[attr-defined]
+        raise TypeError(f"Unsupported operand extraction for {type(expr).__name__}")
+
+    def _lhs_rhs(expr: Expression) -> Tuple[Expression, Expression]:
+        if isinstance(expr, (BinaryOperator, PairRollingOperator)):
+            return expr._lhs, expr._rhs  # type: ignore[attr-defined]
+        raise TypeError(f"Unsupported lhs/rhs extraction for {type(expr).__name__}")
+
+    @lru_cache(maxsize=None)
+    def _length(expr: Optional[Expression]) -> int:
+        if expr is None:
+            return 0
+        if isinstance(expr, (Feature, Constant)):
+            return 1
+        if isinstance(expr, PairRollingOperator):
+            return 2 + _length(expr._lhs) + _length(expr._rhs)
+        if isinstance(expr, RollingOperator):
+            return 2 + _length(expr._operand)
+        if isinstance(expr, BinaryOperator):
+            return 1 + _length(expr._lhs) + _length(expr._rhs)
+        if isinstance(expr, UnaryOperator):
+            return 1 + _length(expr._operand)
+        raise TypeError(f"Unsupported expression type for length: {type(expr).__name__}")
+
+    def _align_children(lhs_a: Expression, rhs_a: Expression,
+                        lhs_b: Expression, rhs_b: Expression,
+                        swap_penalty_a: int, swap_penalty_b: int) -> int:
+        direct_cost = _distance(lhs_a, lhs_b) + _distance(rhs_a, rhs_b)
+        swap_penalty = 0 if (swap_penalty_a == 0 and swap_penalty_b == 0) else 1
+        swap_cost = _distance(lhs_a, rhs_b) + _distance(rhs_a, lhs_b) + swap_penalty
+        return min(direct_cost, swap_cost)
+
+    @lru_cache(maxsize=None)
+    def _distance(expr_a: Optional[Expression], expr_b: Optional[Expression]) -> int:
+        if expr_a is expr_b:
+            return 0
+        if expr_a is None:
+            return _length(expr_b)
+        if expr_b is None:
+            return _length(expr_a)
+
+        if isinstance(expr_a, Feature) and isinstance(expr_b, Feature):
+            return 0 if expr_a._feature == expr_b._feature else 1
+        if isinstance(expr_a, Constant) and isinstance(expr_b, Constant):
+            return 0 if math.isclose(expr_a._value, expr_b._value,
+                                     rel_tol=1e-12, abs_tol=1e-12) else 1
+        if (_is_leaf(expr_a) and _is_leaf(expr_b) and
+                not isinstance(expr_a, type(expr_b))):
+            return 1
+
+        candidates: List[int] = []
+
+        if isinstance(expr_a, UnaryOperator) and isinstance(expr_b, UnaryOperator):
+            base = 0 if type(expr_a) is type(expr_b) else 1
+            candidates.append(base + _distance(expr_a._operand, expr_b._operand))
+
+        if isinstance(expr_a, RollingOperator) and isinstance(expr_b, RollingOperator):
+            base = 0 if type(expr_a) is type(expr_b) else 1
+            delta_cost = 0
+            # Rolling delta_time differences (except Ref) do not affect the distance.
+            if isinstance(expr_a, Ref) and isinstance(expr_b, Ref):
+                delta_cost = 0 if expr_a._delta_time == expr_b._delta_time else 1
+            candidates.append(base + delta_cost + _distance(expr_a._operand, expr_b._operand))
+
+        if isinstance(expr_a, BinaryOperator) and isinstance(expr_b, BinaryOperator):
+            base = 0 if type(expr_a) is type(expr_b) else 1
+            child_cost = _align_children(
+                expr_a._lhs, expr_a._rhs,
+                expr_b._lhs, expr_b._rhs,
+                _swap_penalty(expr_a),
+                _swap_penalty(expr_b),
+            )
+            candidates.append(base + child_cost)
+
+        if isinstance(expr_a, PairRollingOperator) and isinstance(expr_b, PairRollingOperator):
+            base = 0 if type(expr_a) is type(expr_b) else 1
+            child_cost = _align_children(
+                expr_a._lhs, expr_a._rhs,
+                expr_b._lhs, expr_b._rhs,
+                _swap_penalty(expr_a),
+                _swap_penalty(expr_b),
+            )
+            candidates.append(base + child_cost)
+
+        if ((isinstance(expr_a, UnaryOperator) and isinstance(expr_b, RollingOperator)) or
+                (isinstance(expr_a, RollingOperator) and isinstance(expr_b, UnaryOperator))):
+            operand_cost = _distance(_operand(expr_a), _operand(expr_b))
+            candidates.append(1 + operand_cost)
+        if ((isinstance(expr_a, BinaryOperator) and isinstance(expr_b, PairRollingOperator)) or
+                (isinstance(expr_a, PairRollingOperator) and isinstance(expr_b, BinaryOperator))):
+            lhs_a, rhs_a = _lhs_rhs(expr_a)
+            lhs_b, rhs_b = _lhs_rhs(expr_b)
+            child_cost = _align_children(
+                lhs_a, rhs_a,
+                lhs_b, rhs_b,
+                _swap_penalty(expr_a),
+                _swap_penalty(expr_b),
+            )
+            candidates.append(1 + child_cost)
+        if isinstance(expr_a, UnaryOperator):
+            candidates.append(1 + _distance(expr_a._operand, expr_b))
+        if isinstance(expr_a, RollingOperator):
+            candidates.append(1 + _distance(expr_a._operand, expr_b))
+        if isinstance(expr_a, BinaryOperator):
+            candidates.append(1 + _length(expr_a._rhs) + _distance(expr_a._lhs, expr_b))
+            candidates.append(1 + _length(expr_a._lhs) + _distance(expr_a._rhs, expr_b))
+        if isinstance(expr_a, PairRollingOperator):
+            candidates.append(1 + _length(expr_a._rhs) + _distance(expr_a._lhs, expr_b))
+            candidates.append(1 + _length(expr_a._lhs) + _distance(expr_a._rhs, expr_b))
+
+        if isinstance(expr_b, UnaryOperator):
+            candidates.append(1 + _distance(expr_a, expr_b._operand))
+        if isinstance(expr_b, RollingOperator):
+            candidates.append(1 + _distance(expr_a, expr_b._operand))
+        if isinstance(expr_b, BinaryOperator):
+            candidates.append(1 + _distance(expr_a, expr_b._lhs) + _length(expr_b._rhs))
+            candidates.append(1 + _distance(expr_a, expr_b._rhs) + _length(expr_b._lhs))
+        if isinstance(expr_b, PairRollingOperator):
+            candidates.append(1 + _distance(expr_a, expr_b._lhs) + _length(expr_b._rhs))
+            candidates.append(1 + _distance(expr_a, expr_b._rhs) + _length(expr_b._lhs))
+
+        # Fallback: drop to rebuilding both expressions from scratch.
+        candidates.append(_length(expr_a) + _length(expr_b))
+        return min(candidates)
+
+    return _distance(expression_a, expression_b)
+

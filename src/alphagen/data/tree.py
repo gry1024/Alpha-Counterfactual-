@@ -94,7 +94,7 @@ class ExpressionParser:
     def tokenize(self, expr: str) -> List[Token]:
         from alphagen.data.expression import (
             Abs, SLog1p, Inv, Sign, Log, Rank,
-            Add, Sub, Mul, Div, Pow, Greater, Less,
+            Add, Sub, Mul, Div, Pow, Greater, Less, GetGreater, GetLess,
             Ref, TsMean, TsSum, TsStd, TsIr, TsMinMaxDiff, TsMaxDiff, TsMinDiff, TsVar, TsSkew, TsKurt, TsMax, TsMin,
             TsMed, TsMad, TsRank, TsDelta, TsDiv, TsPctChange, TsWMA, TsEMA,
             TsCov, TsCorr
@@ -103,12 +103,13 @@ class ExpressionParser:
         # Create operator mapping
         operator_map = {
             'Abs': Abs, 'SLog1p': SLog1p, 'Inv': Inv, 'Sign': Sign, 'Log': Log, 'Rank': Rank,
-            'Add': Add, 'Sub': Sub, 'Mul': Mul, 'Div': Div, 'Pow': Pow, 'Greater': Greater, 'Less': Less,
+            'Add': Add, 'Sub': Sub, 'Mul': Mul, 'Div': Div, 'Pow': Pow, 'Greater': Greater, 'Less': Less, 'GetGreater': GetGreater, 'GetLess': GetLess,
             'Ref': Ref, 'TsMean': TsMean, 'TsSum': TsSum, 'TsStd': TsStd, 'TsIr': TsIr, 
             'TsMinMaxDiff': TsMinMaxDiff, 'TsMaxDiff': TsMaxDiff, 'TsMinDiff': TsMinDiff, 'TsVar': TsVar,
             'TsSkew': TsSkew, 'TsKurt': TsKurt, 'TsMax': TsMax, 'TsMin': TsMin, 'TsMed': TsMed, 'TsMad': TsMad,
             'TsRank': TsRank, 'TsDelta': TsDelta, 'TsDiv': TsDiv, 'TsPctChange': TsPctChange, 
-            'TsWMA': TsWMA, 'TsEMA': TsEMA, 'TsCov': TsCov, 'TsCorr': TsCorr
+            'TsWMA': TsWMA, 'TsEMA': TsEMA, 'TsCov': TsCov, 'TsCorr': TsCorr,
+            'GetGreater': GetGreater, 'GetLess': GetLess
         }
         
         # Create feature mapping
