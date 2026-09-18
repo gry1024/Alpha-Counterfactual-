@@ -492,7 +492,7 @@ class AlphaKnowledgeTrainer:
                     # if node is not None:
                     #     self.pool.register_expression_node(node)
         ##TODO: set your model name
-        model_name = "your_model_name"
+        model_name = "MiniMax-M3"
         log_dir = os.path.join(
         'data/knowledge_logs',
         f'pool_{args.pool_capacity}',

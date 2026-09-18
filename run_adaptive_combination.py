@@ -280,6 +280,15 @@ def get_tensor_metrics(x, y, risk_free_rate=0.0):
     return result, ret_s
 
 
+def _trading_days(data: StockData) -> pd.DatetimeIndex:
+    s = data.max_backtrack_days
+    return pd.DatetimeIndex(data._dates[s:s + data.n_days])
+
+
+def _date_mask(dates: pd.DatetimeIndex, start: str, end: str) -> np.ndarray:
+    return np.asarray((dates >= pd.Timestamp(start)) & (dates <= pd.Timestamp(end)))
+
+
 def run(args):
     """
     Main function to run adaptive factor combination and evaluation.
@@ -290,6 +299,10 @@ def run(args):
         window = float('inf')
 
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.cuda)
+    use_cuda = torch.cuda.is_available() and int(args.cuda) >= 0
+    device = torch.device('cuda:0') if use_cuda else torch.device('cpu')
+    def _dev(t):
+        return t.cuda() if use_cuda else t
     QLIB_PATH = "data/qlib_data/us_data_qlib_latest" if args.instruments == 'sp500' else "data/qlib_data/cn_data_rolling"
     # 1. Define Target and Load Data
     close = Feature(FeatureType.CLOSE)
@@ -298,22 +311,29 @@ def run(args):
     train_end_time = f'{args.train_end_year}-12-31'
     valid_start_time = f'{args.train_end_year + 1}-01-01'
     valid_end_time = f'{args.train_end_year + 1}-12-31'
-
     test_start_time = '2023-01-01'
     test_end_time = '2026-04-30'
 
+    all_end = max(valid_end_time, test_end_time)
     data_all = StockData(instrument=args.instruments,
                          start_time='2010-01-01',
-                         end_time=test_end_time,
-                         qlib_path=QLIB_PATH)
-    data_valid = StockData(instrument=args.instruments,
-                           start_time=valid_start_time,
-                           end_time=valid_end_time,
-                           qlib_path=QLIB_PATH)
-    data_test = StockData(instrument=args.instruments,
-                          start_time=test_start_time,
-                          end_time=test_end_time,
-                          qlib_path=QLIB_PATH)
+                         end_time=all_end,
+                         qlib_path=QLIB_PATH,
+                         device=device)
+    dates = _trading_days(data_all)
+    valid_m = _date_mask(dates, valid_start_time, valid_end_time)
+    test_m = _date_mask(dates, test_start_time, test_end_time)
+    eval_idx = np.flatnonzero(valid_m | test_m)
+    print(
+        f"[combo] valid {valid_start_time}..{valid_end_time}  n={int(valid_m.sum())}  "
+        f"test {test_start_time}..{test_end_time}  n={int(test_m.sum())}  "
+        f"data_all 2010-01-01..{all_end}  n={len(dates)}",
+        flush=True,
+    )
+    if (valid_m & test_m).any():
+        print("[combo] WARNING: valid/test overlap; each row uses its own date mask", flush=True)
+    if eval_idx.size == 0:
+        raise ValueError("valid/test ranges contain no trading days in data_all")
 
     # 2. Load expressions and convert to tensor
     print(f"Loading expressions from {args.expressions_file}...")
@@ -321,11 +341,16 @@ def run(args):
     print(f"Loaded {len(expressions)} expressions.")
 
     if args.use_weights:
+        data_test = StockData(instrument=args.instruments,
+                              start_time=test_start_time,
+                              end_time=test_end_time,
+                              qlib_path=QLIB_PATH,
+                              device=device)
         fct_tensor = exprs2tensor(expressions, data_test, normalize=True)
-        weights = torch.tensor(weights).cuda()
+        weights = _dev(torch.tensor(weights))
         fct_tensor = fct_tensor @ weights
         tgt_tensor = exprs2tensor([target], data_test, normalize=False)
-        test_results, ret_s = get_tensor_metrics(fct_tensor.cuda(), tgt_tensor.cuda())
+        test_results, ret_s = get_tensor_metrics(_dev(fct_tensor), _dev(tgt_tensor))
         ret_s = ret_s.cpu().numpy()
         save_path = os.path.join(os.path.dirname(args.expressions_file), 'ret_s.npy')
         np.save(save_path, ret_s)
@@ -367,18 +392,17 @@ def run(args):
         ic_s = torch.stack(ic_list, dim=-1)
         ric_s = torch.stack(ric_list, dim=-1)
         #ret_s = torch.stack(ret_list, dim=-1)
-        torch.cuda.empty_cache()
+        if use_cuda:
+            torch.cuda.empty_cache()
 
         # 4. Main adaptive combination loop
         pred_list = []
         shift = args.label_days + 1  # To avoid lookahead bias
         
-        valid_test_days = data_valid.n_days + data_test.n_days
-        start_day = len(fct_tensor) - valid_test_days
-        
         print("Starting adaptive combination process...")
-        pbar = tqdm(range(start_day, len(fct_tensor)))
+        pbar = tqdm(eval_idx)
         for cur in pbar:
+            cur = int(cur)
             # Define rolling window for evaluation
             begin = 0 if not np.isfinite(window) else max(0, cur - window - shift)
             
@@ -449,7 +473,7 @@ def run(args):
             # Update progress bar description with running IC
             if len(pred_list) > 1:
                 running_preds = torch.stack(pred_list, dim=0)
-                running_targets = tgt_tensor[start_day:cur+1, :, 0]
+                running_targets = tgt_tensor[eval_idx[:len(pred_list)], :, 0]
                 running_ic = batch_pearsonr(running_preds, running_targets).mean().item()
                 pbar.set_description(f"Running IC: {running_ic:.4f}, Factors selected: {len(good_idx)}")
 
@@ -459,22 +483,29 @@ def run(args):
         print("Adaptive combination finished. Calculating final metrics...")
         
         all_pred = torch.stack(pred_list, dim=0)
-        
-        # Slice predictions and targets for validation and test sets
-        pred_valid = all_pred[:data_valid.n_days]
-        pred_test = all_pred[data_valid.n_days:]
-        
-        tgt_valid = tgt_tensor[start_day : start_day + data_valid.n_days, :, 0]
-        tgt_test = tgt_tensor[start_day + data_valid.n_days :, :, 0]
-        
-        # Calculate metrics
-        valid_results, _ = get_tensor_metrics(pred_valid.cuda(), tgt_valid.cuda())
-        test_results, ret_s = get_tensor_metrics(pred_test.cuda(), tgt_test.cuda())
-        ret_s = ret_s.cpu().numpy()
+        v_on = torch.as_tensor(valid_m[eval_idx], device=all_pred.device)
+        t_on = torch.as_tensor(test_m[eval_idx], device=all_pred.device)
+        rows, names, ret_s = [], [], None
+        if valid_m.any():
+            vi = torch.as_tensor(np.flatnonzero(valid_m), device=tgt_tensor.device)
+            valid_results, _ = get_tensor_metrics(
+                _dev(all_pred[v_on]), _dev(tgt_tensor[vi, :, 0])
+            )
+            rows.append(valid_results)
+            names.append("Validation")
+        if test_m.any():
+            ti = torch.as_tensor(np.flatnonzero(test_m), device=tgt_tensor.device)
+            test_results, ret_s = get_tensor_metrics(
+                _dev(all_pred[t_on]), _dev(tgt_tensor[ti, :, 0])
+            )
+            rows.append(test_results)
+            names.append("Test")
+        if ret_s is None:
+            ret_s = torch.zeros(0)
+        ret_s = ret_s.cpu().numpy() if torch.is_tensor(ret_s) else ret_s
         save_path = os.path.join(os.path.dirname(args.expressions_file), 'ret_s.npy')
         np.save(save_path, ret_s)
-        # Format and print results
-        results_df = pd.DataFrame([valid_results, test_results], index=['Validation', 'Test'])
+        results_df = pd.DataFrame(rows, index=names)
         print("\n--- Final Performance Metrics ---")
         
         # Print with full precision and no truncation

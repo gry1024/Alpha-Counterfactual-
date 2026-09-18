@@ -31,6 +31,7 @@ dependencies = [
     "sentence-transformers==3.3.1",
     "transformers==4.56.0",
     "tf-keras>=2.16.0",
+    "accelerate>=1.0.0",
 ]
 requires-python = ">=3.11"
 readme = "README.md"

@@ -1,10 +1,36 @@
+"""LLM adapters for Phase A: propose minimal edits, then attribute to a slimmer factor.
+
+Public surface
+--------------
+- propose(expr, k, recent)  -> List[EditAction]         (3 rounds per seed)
+- attribute(f, records)     -> dict (necessary/redundant/final_factor/reason)
+- record_illegal / set_illegal_log: shared by phaseA + llm itself
+
+JSON parsing
+------------
+LLM outputs may be wrapped in markdown ```json ... ```, contain <think>...</think>
+prefixes, or be slightly malformed. _json_obj() tries (in order):
+  1. direct json.loads on the whole text
+  2. extract ```json ... ``` block, json.loads
+  3. raw_decode every top-level {...} starting at each '{'
+  4. salvage by re-extracting the "edits" array if present
+"""
 import json
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from openai import OpenAI
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    InternalServerError,
+    OpenAI,
+    RateLimitError,
+)
+import httpx
 
 if __package__ is None:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -17,21 +43,28 @@ from alphagen.data.expression import (
     UnaryOperator,
 )
 
-from alpha_cf.config import CONSTANTS, DELTA_TIMES, FEATURE_NAMES, K, OPERATORS
-from alpha_cf.edits import EDIT_KINDS, apply_edit, enumerate_sites
+from alpha_cf.config import (
+    CONSTANTS,
+    DELTA_TIMES,
+    FEATURE_NAMES,
+    K,
+    OPERATORS,
+)
+from alpha_cf.edits import EDIT_KINDS, apply_edit
+from alpha_cf.pool import parse_expr
 from alpha_cf.types import CFRecord, EditAction, Site
 
 _REPO = Path(__file__).resolve().parents[2]
-_ILLEGAL_LOG = None  # train_cf sets this to <out_dir>/illegal.jsonl
+_ILLEGAL_LOG: Optional[str] = None  # train_cf sets this to <out_dir>/illegal.jsonl
 
 
-# path or None -> where skipped illegal edits are appended as JSONL
+# path or None -> where skipped illegal edits are appended as JSONL.
 def set_illegal_log(path: Optional[str]) -> None:
     global _ILLEGAL_LOG
     _ILLEGAL_LOG = path
 
 
-# print + optional jsonl: one illegal T(f,a)=None; does not raise
+# print + optional jsonl: one illegal T(f,a)=None; does not raise.
 def record_illegal(source: str, expr, action: EditAction, **extra) -> None:
     print(
         f"[{source}] ILLEGAL skip  kind={action.kind}  site_id={action.site_id}  "
@@ -55,176 +88,148 @@ def record_illegal(source: str, expr, action: EditAction, **extra) -> None:
             w.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
-# raised when .env, HTTP, or JSON is invalid (illegal edits are skipped, not raised)
 class LLMError(RuntimeError):
     pass
 
 
 PROMPT_HEAD = """
 You are an expert on quantitative finance and alpha factor mining, acting as a structural counterfactual intervention proposer.
-You propose WHAT to test. You do NOT compute IC / RankIC / Delta, do NOT backtest, and do NOT pick the final factor. Real market evaluation and any later Q model handle those.
-Strictly follow the instructions given by the user below. Make sure the output ONLY CONTAINS A JSON FORMAT. Do not output anything else other than the JSON object, including code block markers like ``` or ```json, <think> tags, or any prose before or after the JSON.
+You propose WHAT to test. You do NOT compute IC / RankIC / Delta, do NOT backtest, and do NOT pick the final factor. Real market evaluation handles those.
+Strictly follow the user instructions. Output ONLY a JSON object — no code fences, no <think> tags, no prose.
 """
+
 
 PROMPT_FEATURES_AND_OPERATORS = """
-The available features, constants and operators are listed below.
-1. You can use the following features:
-   $open: Opening price.
-   $high: Daily highest price.
-   $low: Daily lowest price.
-   $close: Closing price.
-   $vwap: Daily average price, weighted by the volume of trades at each price.
-   $volume: Trading number of shares.
-2. You can use int constants from WINDOWS during rolling (time-series) calculations, and float constants from CONSTANTS during arithmetic calculations. Other constants are not allowed. Do NOT use scientific notation.
-3. The following operators are available:
-(BEGIN OF FEATURES AND OPERATORS DEFINITIONS)
-    Abs(x): Absolute value of x
-    SLog1p(x): Signed log transform: sign(x) * log(1 + |x|)
-    Inv(x): Reciprocal 1/x
-    Sign(x): Sign of x: 1 if x > 0, -1 if x < 0, 0 if x = 0
-    Log(x): Natural logarithm of x
-    Rank(x): Cross-sectional rank of x (across stocks on the same day)
-    Add(x, y): x + y
-    Sub(x, y): x - y
-    Mul(x, y): x * y
-    Div(x, y): x / y
-    Pow(x, y): x raised to the power of y; y must be a constant
-    Greater(x, y): elementwise max of x and y; BOTH sides must contain a market feature (a constant child is illegal)
-    Less(x, y): elementwise min of x and y; same featured constraint as Greater
-    Ref(x, d): Value of x d days ago
-    TsMean(x, d): Rolling mean of x over the past d days
-    TsSum(x, d): Rolling sum of x over the past d days
-    TsStd(x, d): Rolling standard deviation of x over the past d days
-    TsIr(x, d): Rolling information ratio (mean/std) over the past d days
-    TsMinMaxDiff(x, d): TsMax(x, d) - TsMin(x, d)
-    TsMaxDiff(x, d): today's x minus TsMax(x, d)
-    TsMinDiff(x, d): today's x minus TsMin(x, d)
-    TsVar(x, d): Rolling variance of x over the past d days
-    TsSkew(x, d): Rolling skewness of x over the past d days
-    TsKurt(x, d): Rolling kurtosis of x over the past d days
-    TsMax(x, d): Rolling maximum of x over the past d days
-    TsMin(x, d): Rolling minimum of x over the past d days
-    TsMed(x, d): Rolling median of x over the past d days
-    TsMad(x, d): Rolling mean absolute deviation over the past d days
-    TsRank(x, d): Time-series rank of x over the past d days
-    TsDelta(x, d): Today's value of x minus the value of x d days ago
-    TsDiv(x, d): Today's x divided by the rolling mean of x over d days
-    TsPctChange(x, d): Percentage change in x over the past d days
-    TsWMA(x, d): Weighted moving average over the past d days with linearly decaying weights
-    TsEMA(x, d): Exponential moving average of x with span d
-    TsCov(x, y, d): Time-series covariance of x and y for the past d days
-    TsCorr(x, y, d): Time-series correlation of x and y for the past d days
-(END OF FEATURES AND OPERATORS DEFINITIONS)
-4. Expression syntax: Op(arg, ...) or $feature or a constant. Rolling / PairRolling take the window as the last integer argument. Unary ops take one argument. Binary ops take two. PairRolling (TsCov, TsCorr) take two expressions plus a window.
-Examples of valid alpha expressions:
-TsMean($close,20)
-Div(Sub($close,$open),Add(Sub($high,$low),0.01))
-TsCorr($close,$volume,10)
-Rank($volume)
+1. Features: $open, $high, $low, $close, $vwap, $volume.
+2. Rolling windows MUST be integers from WINDOWS = {windows}. Arithmetic constants MUST be floats from CONSTANTS = {constants}. No scientific notation.
+3. Operators (use exact names, same arity):
+   Abs, SLog1p, Inv, Sign, Log, Rank,
+   Add, Sub, Mul, Div, Pow, Greater, Less,
+   Ref, TsMean, TsSum, TsStd, TsIr, TsMinMaxDiff, TsMaxDiff, TsMinDiff, TsVar, TsSkew, TsKurt, TsMax, TsMin,
+   TsMed, TsMad, TsRank, TsDelta, TsDiv, TsPctChange, TsWMA, TsEMA,
+   TsCov, TsCorr
+4. Syntax: Op(arg, ...) or $feature or a constant. Rolling / PairRolling take the window as the LAST integer arg. Greater/Less require BOTH children to contain a market feature.
+Examples: TsMean($close,20)  Div(Sub($close,$open),Add(Sub($high,$low),0.01))  TsCorr($close,$volume,10)
 """
 
+
 PROMPT_TASK = """
-Your task is to propose K={k} MINIMAL structural counterfactual edits of the current factor f, such that:
-1. Each edit is a one-site intervention T(f, a): change exactly one site_id, keep the rest of the tree unchanged. Do NOT change a feature and a window in the same edit.
-2. First understand the semantic meaning of f in quantitative finance (momentum, reversal, volatility, volume confirmation, residual noise, etc.). Then map each economic hypothesis to one concrete EditAction. This is Semantic Proposal + Intervention Proposal.
-3. You can only use the features, constants and operators given above in the (FEATURES AND OPERATORS DEFINITIONS). DO NOT MODIFY the name of any features or operators. All operators must be used with the same arity as defined.
-4. As for constants: rolling windows MUST be integers from WINDOWS = {windows}; arithmetic constants MUST be floats from CONSTANTS = {constants}. Do NOT use other constants. Do NOT use scientific notation.
-5. Operator replacement MUST stay in the same category: UNARY only to UNARY, BINARY only to BINARY, ROLLING only to ROLLING, PAIR_ROLLING only to PAIR_ROLLING. The per-site allowed sets already enforce this — pick new_value from those sets.
-6. Five kinds and how to use them:
-   6.1 feature_replace: swap the input at a feature site. Tests whether alpha comes from price vs volume, close vs high, etc. new_value ∈ that site's allowed FEATURE set.
-   6.2 operator_replace: swap an operator for a same-arity cousin. Tests mean vs extreme, mean vs volatility, Add vs Sub (sign flip), etc. new_value ∈ that site's allowed operator set. That set is T-filtered: only operators for which apply_edit keeps a featured tree. Greater/Less need BOTH children featured, so they are omitted when a child is a constant (e.g. Pow($low,0.5) cannot become Greater).
-   6.3 window_replace: change only the time scale; the mechanism stays. new_value is a window integer written as a string, e.g. "10". new_value ∈ that site's allowed WINDOWS.
-   6.4 wrap: put ONE operator layer around the subtree at site_id (only when that site lists wrap). Inverse of unwrap-delete. new_value is a template with exactly one $_ (stands for this site's subtree). Write Abs($_) / Log($_) / Rank($_), not Abs(the subtree) or Log($vwap). Other examples: TsMean($_,20) ; Div($_,1.0) ; Div(1.0,$_) ; Add($_,$volume) ; TsCorr($_,$volume,10). For Binary / PairRolling the other operand MUST be a FEATURE or CONSTANT leaf. Constants need a decimal point (1.0 not 1). Greater($_,1.0) is illegal. Root wrap is legal when listed: TsMean($close,20) + wrap site 0 with Div($_,1.0) → Div(TsMean($close,20),1.0).
-   6.5 subtree_delete: remove the subtree at site_id and keep a valid EXPR. new_value MUST be null. Rules: (a) site_id 0 (root) is illegal — you cannot delete the whole factor; (b) if the site is a child of Binary / PairRolling, replace the parent operator with the sibling branch (prune this child); (c) if the site is a Unary / Rolling operator that is NOT the root, unwrap — replace that op with its operand (inverse of wrap); (d) deleting a Feature / Constant that is the only child of Unary / Rolling is illegal (would empty the parent) — delete the parent op site instead, do not auto-unwrap a different site.
-7. Give {k} edits with DIFFERENT modification strategies, sound and explainable. They should look semantically different, or use totally different ways to probe the same factor (for example: cross-sectional Rank vs time-series Ts op; different statistical measures; different but related semantic meanings such as dropping volume confirmation vs flipping momentum to reversal vs changing the horizon). Do NOT emit {k} synonymous window tweaks (10 then 20 then 30).
-8. Each hypothesis MUST be a falsifiable causal sentence, e.g. "If the signal is short-horizon reversal rather than a 20-day trend, shortening the window should raise |IC|", not "try another operator".
-9. If Observed Delta traces are not empty, they are real backtest outcomes from earliest to latest, NOT numbers you invented. Each line is one complete intervention: parent f, the edit (kind / site_id / new_value / hypothesis), child f', Δ (= r − r_seed), plus observed ic / rank_ic / r. site_id is relative to that line's f, which may be an ancestor of the current factor. Learn from them: do not repeat a kind/site/value on the same parent that already produced Δ≤0; a direction with Δ>0 may be continued with a different legal value under the same hypothesis.
-10. After you generate each edit, check whether it is valid. Some INVALID operations are:
-   10.1 Modify the name of operators or features. Eg: using "*" instead of "Mul", using "closing_price" instead of "$close", using "TSMAD" instead of "TsMad".
-   10.2 The number of operands is not correct. Eg: Add(x), Div(x,y,z), missing rolling window in TsSkew / TsMean, etc.
-   10.3 Using a window not in WINDOWS, or a constant not in CONSTANTS, or scientific notation (1e-4). Transfer into a listed float, e.g. 0.01.
-   10.4 Using operators or features not listed in FEATURES AND OPERATORS DEFINITIONS.
-   10.5 Changing two things at once, or picking a site_id that is not in the editable-site list.
-   10.6 operator_replace across categories (TsMean → Add, Rank → TsMax).
-   10.7 subtree_delete with new_value other than null; wrap / feature_replace / operator_replace / window_replace with null.
-   10.8 wrap template missing $_, using two holes, wrapping more than one layer, other operand not a leaf, constant written as 1 instead of 1.0, an unknown operator, or a wrap that leaves the tree unfeatured (Greater/Less around a constant).
-   10.9 subtree_delete at site_id 0, or at a Feature / Constant under Unary / Rolling.
-   10.10 new_value not in that site's allowed set for typed replaces (the ∈ set printed for the site). Those sets are already filtered by T: only values for which apply_edit succeeds.
-   10.11 operator_replace that leaves the tree with no market feature (Greater/Less require two featured children; Pow($low,0.5)→Greater is illegal).
-   All the mentioned above in 10 are INVALID. Try your best to AVOID them.
-11. You do NOT compute IC, RankIC, or Δ. R(f) below is given only as context for how strong the current factor is.
+Task: propose K={k} MINIMAL one-site counterfactual edits of the current factor f.
+The PURPOSE of Phase A is to UNDERSTAND WHICH SUB-STRUCTURES OF f ARE REDUNDANT OR LOAD-BEARING, not to invent a stronger alpha. Every edit here is a probe, not an improvement.
+1. Each edit changes exactly one site_id, keeps the rest unchanged. The edit is applied to the FROZEN ORIGINAL f, never to a previous f'.
+2. For each non-leaf site in f, you SHOULD propose at least one PROBE that targets it — feature_replace / operator_replace / window_replace at that site, OR subtree_delete of that subtree. Probes tell us what the site contributes; without them we cannot attribute.
+3. subtree_delete is the most informative probe: it tests "is this subtree redundant?". Prioritise subtree_delete whenever the candidate deletion is legal (see rule 8).
+4. For richer factors (>= 4 sites), include BOTH probing edits AND a few candidate-improvement edits (feature/operator/window replace). The improvement edits give the attribution step something to weigh the probes against; they are NOT the goal.
+5. For very short factors (1–2 sites, e.g. $volume or $close), the catalog of useful edits is small. Propose what you can; the attribution step may decide to keep f unchanged.
+6. Use only features/operators from the catalog. Rolling windows MUST be integers in WINDOWS; arithmetic constants MUST be floats in CONSTANTS.
+7. Operator replacement MUST stay in the same category (UNARY/BINARY/ROLLING/PAIR_ROLLING); use the per-site ∈ set.
+8. Four kinds (Phase A only allows 减法 / 等量替换型编辑; wrap has been removed):
+   feature_replace  swap a $feature  →  tests whether alpha is price- vs volume-based, etc.
+   operator_replace swap same-arity operator → tests mean vs extreme, Add vs Sub, etc.
+   window_replace   change time scale → tests horizon; new_value as a string e.g. "10".
+   subtree_delete   remove that subtree and keep a valid EXPR. new_value MUST be null. Rules: root (site_id 0) cannot be deleted; under Binary/PairRolling the sibling branch replaces the parent; under Unary/Rolling the operand replaces the op (unwrap); deleting a Feature/Constant that is the only child of Unary/Rolling is illegal — delete the parent op instead.
+9. {k} edits must be semantically different (not synonymous window tweaks).
+10. hypothesis MUST be a falsifiable causal sentence. For probes, the hypothesis should state WHAT EVIDENCE the edit would produce if the targeted subtree is / is not redundant.
+11. If Observed traces are not empty, they are real one-site interventions vs the frozen original f. You do NOT see numeric IC / Delta. Later batches MUST prioritize (kind, site_id) pairs listed under Untested.
+12. Do NOT output anything except the JSON object. Length MUST be exactly {k}.
 
-Given the current factor, you should ONLY and STRICTLY output a JSON object which contains the following contents:
-{{
-  "edits": [
-    {{
-      "hypothesis": "falsifiable causal sentence, string",
-      "kind": "feature_replace|operator_replace|window_replace|subtree_delete|wrap",
-      "site_id": 0,
-      "new_value": "string, or null when kind is subtree_delete"
-    }}
-  ]
-}}
-The length of edits MUST be {k}. Each element MUST contain hypothesis, kind, site_id, new_value. site_id MUST be an integer that appears in the editable-site list. new_value MUST fall in that site's allowed set.
-
-The example below is ONLY schema illustration for f = TsMean($close,20) where site_id=0 is TsMean and site_id=1 is $close. This tree has NO legal subtree_delete (root cannot be deleted; $close is the only child of a rolling op). For Add($close,$open), subtree_delete at site_id=2 with null yields $close. The example has 5 edits; you must still output exactly {k} edits for the CURRENT f, re-numbering site_id from the site list above, not by copying this example unless the tree is identical:
+Output JSON:
 {{"edits":[
-  {{"hypothesis":"If the effective signal is a shorter-horizon price trend rather than a 20-day mean, shortening the window should raise |IC|","kind":"window_replace","site_id":0,"new_value":"10"}},
-  {{"hypothesis":"Close may only proxy liquidity; swapping in volume tests whether the alpha is price-based or flow-based","kind":"feature_replace","site_id":1,"new_value":"$volume"}},
-  {{"hypothesis":"Replacing the mean with an extreme tests whether alpha comes from tails rather than average drift","kind":"operator_replace","site_id":0,"new_value":"TsMax"}},
-  {{"hypothesis":"Normalizing the rolling mean by 1.0 tests a no-op scale wrap that later edits can turn into a real denominator","kind":"wrap","site_id":0,"new_value":"Div($_,1.0)"}},
-  {{"hypothesis":"Cross-sectional ranking inside the time-series mean tests whether relative strength, not raw level, is the source","kind":"wrap","site_id":1,"new_value":"Rank($_)"}}
+  {{"hypothesis":"...","kind":"feature_replace|operator_replace|window_replace|subtree_delete",
+    "site_id":0,"new_value":"... or null when kind=subtree_delete"}}
 ]}}
 
 Current factor:
 f = {expr}
-R(f) = |daily-mean Pearson IC| = {r:.6f}
 
-Legal vocabulary (typed replaces use the per-site ∈ sets; wrap uses this catalog plus the $_ template):
-{vocab}
-Wrap templates (exactly one $_):
-Abs($_)  Log($_)  Rank($_)  TsMean($_,20)  Div($_,1.0)  Div(1.0,$_)  Add($_,$volume)  TsCorr($_,$volume,10)
-
-Editable sites (site_id is preorder; new_value must be taken from that site's ∈ set):
+Editable sites (site_id is preorder; new_value must come from that site's ∈ set):
 {sites}
 
-Observed Delta traces (real backtests, not computed by you):
+Observed Delta traces (real backtests from earlier rounds):
 {recent}
 
-Do not output anything else other than the JSON object, including code block markers like ``` or ```json.
-Now output a JSON object whose edits list has length exactly {k}.
+Untested (kind, site_id) pairs (prioritize these):
+{untested}
 """
 
 
-# expr, R(f), k -> legal EditActions from the LLM (illegal items printed and dropped)
-def propose(expr, r, k=K, recent=None) -> List[EditAction]:
+PROMPT_ATTRIBUTE = """
+You are an expert on alpha factor mining. Given a seed factor f and 15 (or fewer) real counterfactual backtest records on f, decide which sub-structures of f are REDUNDANT (safe to drop) and which are NECESSARY (load-bearing). Your output is a TRIMMED version of f, used to UNDERSTAND its mechanism — NOT to invent a stronger alpha.
+
+You may rewrite f freely — you are NOT constrained to apply a specific edit. Use the catalog of features/operators/windows below.
+
+CRITICAL: if the records show that every probe targeting a subtree leaves inc_residual ~0 AND delta_ic ~0, that subtree is redundant — drop it. Conversely, if a probe causes large |delta_ic| or |inc_residual|, that subtree is load-bearing — keep it.
+
+KEEP f UNCHANGED when it is already minimal:
+- f is a single feature (e.g. $volume, $close) — there is nothing to drop.
+- f has 1–2 sites and ALL probes show inc_residual ~0 — the seed is already a clean irreducible unit.
+In these cases, set final_factor EXACTLY to the original f string below. Returning f unchanged is the CORRECT answer, not a fallback.
+
+How to use the records:
+- Each record has: kind, site_id, new_value, hypothesis, inc_residual, ic_f, ic_fp, delta_ic, f_prime.
+- inc_residual = Pearson IC of residual(f' | f) vs forward return. Near 0 means f' carries NO info beyond f; far from 0 (positive OR negative) means f' has INDEPENDENT signal vs f. This is the KEY signal for redundancy: if dropping/changing a subtree barely changes inc_residual, the subtree is likely redundant.
+- delta_ic = ic(f') − ic(f). Positive means the edit IMPROVED IC; negative means it HURT IC.
+- ic_f / ic_fp are the raw Pearson ICs of f and f' on train (you can sanity-check delta_ic from these).
+- Compare across records: if all (kind, site_id) edits targeting a subtree leave inc_residual ~0 and delta_ic ~0, that subtree is redundant. If changing it causes a large |delta_ic| or |inc_residual|, it is load-bearing.
+- You see multiple edit kinds at multiple sites. Use the whole picture to identify the essential mechanism vs accidental complexity.
+
+Output ONLY this JSON object (no code fences, no <think> tags, no prose):
+{{
+  "necessary": "what load-bearing mechanism you kept, and why",
+  "redundant":  "what sub-structure(s) you dropped, and the evidence (cite records by site_id / kind)",
+  "final_factor": "a legal alpha expression using the catalog; return the ORIGINAL f string verbatim when f is already minimal",
+  "reason": "1-2 sentences tying necessary+redundant to the final_factor"
+}}
+
+Catalog (exact names, same arity as defined):
+$open $high $low $close $vwap $volume (features)
+WINDOWS = {windows}
+CONSTANTS = {constants}
+Operators: Abs, SLog1p, Inv, Sign, Log, Rank, Add, Sub, Mul, Div, Pow, Greater, Less, Ref, TsMean, TsSum, TsStd, TsIr, TsMinMaxDiff, TsMaxDiff, TsMinDiff, TsVar, TsSkew, TsKurt, TsMax, TsMin, TsMed, TsMad, TsRank, TsDelta, TsDiv, TsPctChange, TsWMA, TsEMA, TsCov, TsCorr
+(ROLLING/PairRolling take the window as the LAST int arg; Greater/Less need TWO featured children; constants need a decimal point.)
+
+Original factor (return this verbatim if f is already minimal):
+f = {expr}
+
+Observed counterfactual records (real backtests):
+{records}
+"""
+
+
+# expr, IC(f), k -> legal EditActions from the LLM (illegal items printed and dropped).
+#
+# Pipeline:
+#   1. Load .env (api key / base url / model).
+#   2. Build messages with PROMPT_HEAD (system) + PROMPT_TASK + per-site list.
+#   3. _chat() retries on transient errors with exponential backoff up to
+#      LLM_RETRY_BUDGET seconds.
+#   4. Strip <think>...</think> prefix, parse JSON, drop edits whose T(f, a)
+#      produces f' == f (no-op) or fails apply_edit.
+def propose(expr, k: int = K, recent: Optional[Sequence[CFRecord]] = None) -> List[EditAction]:
     cfg = _dotenv()
-    sites = enumerate_sites(expr)
+    sites = _sites_with_synthesis_safe_includes(expr)
     print(f"[llm] propose k={k}", flush=True)
-    data = _chat(cfg, _messages(expr, r, k, sites, recent))
+    data = _chat(cfg, _messages_propose(expr, k, sites, recent))
     choice = data["choices"][0]
     msg = choice.get("message") or {}
-    thinking = cfg.get("LLM_THINKING") or "adaptive"
     text = _answer_content(msg)
     print(
         f"[llm] finish_reason={choice.get('finish_reason')}  "
-        f"thinking={thinking}  reasoning_chars={_reasoning_chars(msg)}",
+        f"reasoning_chars={_reasoning_chars(msg)}",
         flush=True,
     )
     if not text:
-        print(
-            "[llm] empty content after thinking split "
-            f"(finish_reason={choice.get('finish_reason')}); returning empty",
-            flush=True,
-        )
+        print(f"[llm] empty propose content; returning empty", flush=True)
         return []
     print("[llm] raw output >>>", flush=True)
     print(text, flush=True)
     print("[llm] raw output <<<", flush=True)
-    actions = _parse(text, expr)
+    actions = _parse_edits(text, expr)
     if len(actions) != k:
         print(f"[llm] expected {k} edits, got {len(actions)}; keeping parsed items", flush=True)
     legal: List[EditAction] = []
+    # Verify each parsed edit actually produces a featured f' (LLM may propose
+    # an edit whose new_value isn't in the site's ∈ set — apply_edit returns None).
     for a in actions:
         fp = apply_edit(expr, a)
         if fp is None:
@@ -239,7 +244,53 @@ def propose(expr, r, k=K, recent=None) -> List[EditAction]:
     return legal
 
 
-# repo .env -> LLM_API_KEY / LLM_BASE_URL / LLM_MODEL (+ optional knobs)
+# After probe records: returns {"necessary", "redundant", "final_factor", "reason"}.
+# If LLM fails, returns a fallback dict with final_factor = str(f).
+def attribute(f: Expression, records: Sequence[dict]) -> dict:
+    fallback = {
+        "necessary": "",
+        "redundant": "",
+        "final_factor": str(f),
+        "reason": "fallback: LLM call failed; keeping original f",
+    }
+    cfg = _dotenv()
+    print(f"[llm] attribute  records={len(records)}", flush=True)
+    try:
+        data = _chat(cfg, _messages_attribute(f, records))
+    except LLMError as e:
+        print(f"[llm] attribute failed: {e}; returning fallback", flush=True)
+        return fallback
+    choice = data["choices"][0]
+    msg = choice.get("message") or {}
+    text = _answer_content(msg)
+    print(
+        f"[llm] finish_reason={choice.get('finish_reason')}  "
+        f"reasoning_chars={_reasoning_chars(msg)}",
+        flush=True,
+    )
+    if not text:
+        print("[llm] empty attribute content; returning fallback", flush=True)
+        return fallback
+    print("[llm] raw output >>>", flush=True)
+    print(text, flush=True)
+    print("[llm] raw output <<<", flush=True)
+    parsed = _parse_attribute(text, fallback)
+    # verify final_factor parses to a featured expression
+    ff = parsed.get("final_factor") or ""
+    try:
+        expr = parse_expr(ff)
+        if not getattr(expr, "is_featured", True):
+            print(f"[llm] attribute final_factor unfeatured: {expr}", flush=True)
+            return fallback
+        # Normalise to canonical str so downstream string-compare matches.
+        parsed["final_factor"] = str(expr)
+        return parsed
+    except Exception as e:
+        print(f"[llm] attribute final_factor parse failed: {e}; raw={ff!r}", flush=True)
+        return fallback
+
+
+# repo .env -> LLM_API_KEY / LLM_BASE_URL / LLM_MODEL (+ optional knobs).
 def _dotenv() -> Dict[str, str]:
     path = _REPO / ".env"
     if not path.is_file():
@@ -257,45 +308,53 @@ def _dotenv() -> Dict[str, str]:
     return cfg
 
 
-# operator class -> comma-separated names in that category
-def _ops(cls) -> str:
-    return ", ".join(op.__name__ for op in OPERATORS if op.category_type() is cls)
-
-
-# FEATURES / WINDOWS / CONSTANTS / ops by category, for the prompt
 def _vocab() -> str:
     return "\n".join([
         "FEATURES: " + ", ".join(FEATURE_NAMES),
         "WINDOWS: " + ", ".join(map(str, DELTA_TIMES)),
         "CONSTANTS: " + ", ".join(map(str, CONSTANTS)),
-        "UNARY_OPS: " + _ops(UnaryOperator),
-        "BINARY_OPS: " + _ops(BinaryOperator),
-        "ROLLING_OPS: " + _ops(RollingOperator),
-        "PAIR_ROLLING_OPS: " + _ops(PairRollingOperator),
+        "UNARY_OPS: " + ", ".join(op.__name__ for op in OPERATORS
+                                   if op.category_type() is UnaryOperator),
+        "BINARY_OPS: " + ", ".join(op.__name__ for op in OPERATORS
+                                    if op.category_type() is BinaryOperator),
+        "ROLLING_OPS: " + ", ".join(op.__name__ for op in OPERATORS
+                                    if op.category_type() is RollingOperator),
+        "PAIR_ROLLING_OPS: " + ", ".join(op.__name__ for op in OPERATORS
+                                         if op.category_type() is PairRollingOperator),
     ])
 
 
-# Site list -> per-site allowed-set text for the prompt
+# Local import here to avoid a top-level cycle: edits imports from alpha_cf.types,
+# and we want to call enumerate_sites without importing alpha_cf.edits at module
+# load (which would re-import this file).
+def _sites_with_synthesis_safe_includes(expr: Expression) -> List[Site]:
+    from alpha_cf.edits import enumerate_sites
+    return enumerate_sites(expr)
+
+
 def _format_sites(sites: List[Site]) -> str:
     blocks = []
     for s in sites:
         lines = [f"[site_id={s.site_id}] type={s.kind}  subtree={s.expr_str}  current={s.current}"]
         if s.kind == "feature":
-            lines.append("  allowed: feature_replace, new_value ∈ {" + ", ".join(s.allowed) + "}")
+            lines.append("  allowed: feature_replace, new_value in {" + ", ".join(s.allowed) + "}")
         elif s.kind == "operator":
-            lines.append("  allowed: operator_replace, new_value ∈ {" + ", ".join(s.allowed) + "}")
+            lines.append("  allowed: operator_replace, new_value in {" + ", ".join(s.allowed) + "}")
             if s.allowed_windows:
-                lines.append("  allowed: window_replace, new_value ∈ {" + ", ".join(map(str, s.allowed_windows)) + "}")
+                lines.append("  allowed: window_replace, new_value in {" + ", ".join(map(str, s.allowed_windows)) + "}")
         if s.can_delete:
             lines.append("  allowed: subtree_delete, new_value must be null")
-        if s.can_wrap:
-            lines.append("  allowed: wrap, new_value e.g. Abs($_) / Log($_) / TsMean($_,20) / Div($_,1.0)")
         blocks.append("\n".join(lines))
     return "\n".join(blocks)
 
 
-# keep traces from the last n search rounds; no-op if history has <= n rounds
-def _last_n_rounds(recent: Sequence[CFRecord], n: int = 3) -> Sequence[CFRecord]:
+def _last_n_rounds(recent: Sequence[CFRecord], n: int = 1) -> Sequence[CFRecord]:
+    """Keep only records from the most recent `n` rounds (by extra["round"]).
+
+    phaseA passes back round_idx-1 in extra["round"] so subsequent rounds see
+    only their immediate predecessor, encouraging the LLM to explore new
+    (kind, site) pairs instead of re-trying the previous batch.
+    """
     seen: List[int] = []
     for rec in recent:
         rnd = (rec.extra or {}).get("round")
@@ -307,7 +366,6 @@ def _last_n_rounds(recent: Sequence[CFRecord], n: int = 3) -> Sequence[CFRecord]
     return [rec for rec in recent if (rec.extra or {}).get("round") in keep]
 
 
-# CFRecord list -> Observed Delta traces block
 def _format_recent(recent: Sequence[CFRecord]) -> str:
     lines = []
     for rec in recent:
@@ -321,38 +379,77 @@ def _format_recent(recent: Sequence[CFRecord]) -> str:
         ]
         if a.hypothesis:
             parts.append(f"hypothesis={a.hypothesis}")
-        parts.extend([
-            f"Δ={rec.delta:+.4f}",
-            f"ic={rec.ic:.4f}",
-            f"rank_ic={rec.rank_ic:.4f}",
-            f"r={rec.r:.6f}",
-            f"r_seed={rec.r_seed:.6f}",
-        ])
         extra = rec.extra or {}
-        for key in ("round", "seed"):
+        for key in ("round",):
             if key in extra:
                 parts.append(f"{key}={extra[key]}")
         lines.append("- " + "  ".join(parts))
     return "\n".join(lines)
 
 
-# expr, r, k, sites, traces -> OpenAI-style system+user messages
-def _messages(expr: Expression, r: float, k: int, sites: List[Site], recent: Optional[Sequence[CFRecord]]):
+def _format_records_for_attr(records: Sequence[dict]) -> str:
+    """Pretty-print records for the attribution prompt.
+
+    Each record is the dict shape produced by phaseA: keys include kind, site_id,
+    new_value, hypothesis, inc_residual, ic_f, ic_fp, delta_ic, f_prime.
+    Missing keys are skipped.
+    """
+    lines = []
+    for i, rec in enumerate(records, 1):
+        parts = [f"#{i}  kind={rec.get('kind')}  site_id={rec.get('site_id')}  new_value={rec.get('new_value')}"]
+        if rec.get("hypothesis"):
+            parts.append(f"hypothesis={rec['hypothesis']}")
+        for k in ("inc_residual", "ic_f", "ic_fp", "delta_ic"):
+            if k in rec:
+                v = rec[k]
+                if isinstance(v, float):
+                    parts.append(f"{k}={v:+.4f}")
+                else:
+                    parts.append(f"{k}={v}")
+        if rec.get("f_prime"):
+            parts.append(f"f'={rec['f_prime']}")
+        lines.append("- " + "  ".join(parts))
+    if not lines:
+        return "(empty: no legal edits were produced for this seed)"
+    return "\n".join(lines)
+
+
+def _untested_text(expr: Expression, recent: Optional[Sequence[CFRecord]]) -> str:
+    # (kind, site_id) pairs the LLM has NOT tried yet → tell it to prioritise
+    # these in the next batch so coverage expands across rounds.
+    from alpha_cf.edits import enumerate_sites, kinds_for_site
+    tried = {(rec.action.kind, rec.action.site_id) for rec in (recent or [])}
+    lines = []
+    for s in enumerate_sites(expr):
+        missing = [k for k in kinds_for_site(s) if (k, s.site_id) not in tried]
+        if missing:
+            lines.append(f"site {s.site_id} current={s.current}: untested {', '.join(missing)}")
+    return "\n".join(lines) if lines else "(all listed kinds on all sites were tried at least once)"
+
+
+def _messages_propose(expr: Expression, k: int, sites: List[Site],
+                      recent: Optional[Sequence[CFRecord]]):
     recent_txt = (
         _format_recent(_last_n_rounds(recent))
         if recent
         else "(empty. This is the first intervention batch for this factor.)"
     )
-
-    user = PROMPT_FEATURES_AND_OPERATORS + PROMPT_TASK.format(
-        k=k,
-        windows=", ".join(map(str, DELTA_TIMES)),
-        constants=", ".join(map(str, CONSTANTS)),
-        expr=expr,
-        r=r,
-        vocab=_vocab(),
-        sites=_format_sites(sites),
-        recent=recent_txt,
+    untested = (
+        _untested_text(expr, recent)
+        if recent
+        else "(first batch: no coverage constraint)"
+    )
+    user = (
+        PROMPT_FEATURES_AND_OPERATORS
+        + PROMPT_TASK.format(
+            k=k,
+            windows=", ".join(map(str, DELTA_TIMES)),
+            constants=", ".join(map(str, CONSTANTS)),
+            expr=expr,
+            sites=_format_sites(sites),
+            recent=recent_txt,
+            untested=untested,
+        )
     )
     return [
         {"role": "system", "content": PROMPT_HEAD.strip()},
@@ -360,14 +457,26 @@ def _messages(expr: Expression, r: float, k: int, sites: List[Site], recent: Opt
     ]
 
 
-# OpenAI-compatible chat; MiniMax extras go in extra_body
-def _chat(cfg: Dict[str, str], messages) -> dict:
-    client = OpenAI(
-        api_key=cfg["LLM_API_KEY"],
-        base_url=cfg["LLM_BASE_URL"].rstrip("/"),
-        timeout=float(cfg["LLM_TIMEOUT"]) if cfg.get("LLM_TIMEOUT") else 600.0,
+def _messages_attribute(f: Expression, records: Sequence[dict]):
+    user = PROMPT_ATTRIBUTE.format(
+        windows=", ".join(map(str, DELTA_TIMES)),
+        constants=", ".join(map(str, CONSTANTS)),
+        expr=f,
+        records=_format_records_for_attr(records),
     )
+    return [
+        {"role": "system", "content": PROMPT_HEAD.strip()},
+        {"role": "user", "content": user.strip()},
+    ]
+
+
+# OpenAI-compatible chat; retries transient errors until LLM_RETRY_BUDGET (default 300s).
+def _chat(cfg: Dict[str, str], messages) -> dict:
+    timeout = float(cfg["LLM_TIMEOUT"]) if cfg.get("LLM_TIMEOUT") else 600.0
+    budget = float(cfg["LLM_RETRY_BUDGET"]) if cfg.get("LLM_RETRY_BUDGET") else 300.0
     thinking = cfg.get("LLM_THINKING") or "adaptive"
+    # Some upstream models (e.g. Claude on certain proxies) split reasoning into
+    # a separate billing bucket; reasoning_split=false merges them back.
     extra: Dict = {
         "thinking": {"type": thinking},
         "reasoning_split": thinking != "disabled",
@@ -380,17 +489,56 @@ def _chat(cfg: Dict[str, str], messages) -> dict:
     }
     if cfg.get("LLM_TEMPERATURE"):
         kwargs["temperature"] = float(cfg["LLM_TEMPERATURE"])
-    try:
-        resp = client.chat.completions.create(**kwargs)
-    except Exception as e:
-        raise LLMError(f"LLM request failed: {type(e).__name__}: {e}") from e
-    return resp.model_dump()
+
+    attempt = 0
+    t0 = time.monotonic()
+    last_err: Optional[Exception] = None
+    while True:
+        try:
+            client = OpenAI(
+                api_key=cfg["LLM_API_KEY"],
+                base_url=cfg["LLM_BASE_URL"].rstrip("/"),
+                timeout=httpx.Timeout(timeout, connect=30.0),
+            )
+            resp = client.chat.completions.create(**kwargs)
+            return resp.model_dump()
+        except Exception as e:
+            last_err = e
+            elapsed = time.monotonic() - t0
+            # Non-transient errors (auth, bad request) → fail immediately;
+            # transient errors (5xx, rate-limit, timeout) → retry with exp backoff
+            # capped at LLM_RETRY_BUDGET wall-clock seconds total.
+            if not _transient(e) or elapsed >= budget:
+                break
+            attempt += 1
+            sleep = min(60.0, 5.0 * (2 ** (attempt - 1)))
+            remain = budget - elapsed
+            if remain <= 0:
+                break
+            sleep = min(sleep, remain)
+            print(
+                f"[llm] transient {type(e).__name__}: {e}  "
+                f"retry={attempt}  sleep={sleep:.0f}s  elapsed={elapsed:.0f}/{budget:.0f}s",
+                flush=True,
+            )
+            time.sleep(sleep)
+    raise LLMError(f"LLM request failed: {type(last_err).__name__}: {last_err}") from last_err
 
 
-# message dict -> final answer only (CoT lives in reasoning_* after split)
+def _transient(exc: Exception) -> bool:
+    # Network / rate-limit / 5xx → retry. Auth / 4xx (other than 408/409/425/429) → don't.
+    if isinstance(exc, (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError)):
+        return True
+    if isinstance(exc, APIStatusError) and exc.status_code in (408, 409, 425, 429, 500, 502, 503, 504):
+        return True
+    return False
+
+
 def _answer_content(msg: dict) -> str:
+    """Strip <think>...</think> and concat all content parts into one string."""
     raw = msg.get("content")
     if isinstance(raw, list):
+        # Some providers return content as [{type: text, text: ...}, ...]
         parts = []
         for p in raw:
             if isinstance(p, str):
@@ -402,8 +550,8 @@ def _answer_content(msg: dict) -> str:
     return re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
 
 
-# message dict -> length of split-off reasoning fields
 def _reasoning_chars(msg: dict) -> int:
+    """Length of the model's hidden reasoning chain (for logging / debugging)."""
     n = len(msg.get("reasoning_content") or "")
     details = msg.get("reasoning_details") or []
     if isinstance(details, list):
@@ -415,17 +563,34 @@ def _reasoning_chars(msg: dict) -> int:
     return n
 
 
-# True iff obj is the {"edits": [...]} payload
 def _has_edits(obj) -> bool:
     return isinstance(obj, dict) and isinstance(obj.get("edits"), list)
 
 
-# broken wrapper -> edit dicts from the "edits" array, skipping extra/missing braces
-def _extract_edits_array(text: str) -> Optional[List[dict]]:
-    key = text.find('"edits"')
-    if key < 0:
+def _has_attribution(obj) -> bool:
+    if not isinstance(obj, dict):
+        return False
+    if not isinstance(obj.get("final_factor"), str):
+        return False
+    # need at least one of necessary / redundant / reason
+    return any(isinstance(obj.get(k), str) for k in ("necessary", "redundant", "reason"))
+
+
+def _is_payload(obj) -> bool:
+    if not isinstance(obj, dict):
+        return False
+    return _has_edits(obj) or _has_attribution(obj)
+
+
+def _extract_array(text: str, key: str) -> Optional[List[dict]]:
+    # Last-resort salvage: if the wrapper JSON is unparseable but a "edits": [...]
+    # array is somewhere in the text, pull it out so we lose a few items but
+    # keep the round productive instead of returning empty.
+    needle = f'"{key}"'
+    at = text.find(needle)
+    if at < 0:
         return None
-    i = text.find("[", key)
+    i = text.find("[", at)
     if i < 0:
         return None
     i += 1
@@ -451,12 +616,12 @@ def _extract_edits_array(text: str) -> Optional[List[dict]]:
     return items or None
 
 
-# model text -> {"edits": [...]} (raw, fenced, or salvaged array items)
+# model text -> {"edits": [...]} or {"final_factor": ..., ...} payload.
 def _json_obj(text: str) -> dict:
     text = re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
     try:
         obj = json.loads(text)
-        if _has_edits(obj):
+        if _is_payload(obj):
             return obj
     except json.JSONDecodeError:
         pass
@@ -464,7 +629,7 @@ def _json_obj(text: str) -> dict:
     if m:
         try:
             obj = json.loads(m.group(1))
-            if _has_edits(obj):
+            if _is_payload(obj):
                 return obj
         except json.JSONDecodeError:
             pass
@@ -476,24 +641,25 @@ def _json_obj(text: str) -> dict:
             obj, _ = dec.raw_decode(text, i)
         except json.JSONDecodeError:
             continue
-        if _has_edits(obj):
+        if _is_payload(obj):
             return obj
-    salvaged = _extract_edits_array(text)
+    salvaged = _extract_array(text, "edits")
     if salvaged is not None:
         print(f"[llm] wrapper JSON invalid; salvaged {len(salvaged)} edit objects", flush=True)
         return {"edits": salvaged}
     raise LLMError("response is not JSON")
 
 
-# JSON text -> EditAction list; bad items printed and dropped, not raised
-def _parse(text: str, expr=None) -> List[EditAction]:
+# JSON text -> EditAction list; bad items printed and dropped, not raised.
+def _parse_edits(text: str, expr=None) -> List[EditAction]:
     try:
         obj = _json_obj(text)
     except LLMError as e:
         print(f"[llm] parse failed: {e}; returning empty", flush=True)
         return []
     if not _has_edits(obj):
-        print("[llm] JSON missing edits list; returning empty", flush=True)
+        if not _has_attribution(obj):
+            print("[llm] JSON missing edits list; returning empty", flush=True)
         return []
     out = []
     for i, item in enumerate(obj["edits"]):
@@ -502,7 +668,8 @@ def _parse(text: str, expr=None) -> List[EditAction]:
             continue
         kind = item.get("kind")
         if kind not in EDIT_KINDS:
-            dummy = EditAction(str(kind), int(item["site_id"]) if "site_id" in item else -1, item.get("new_value"), item.get("hypothesis"))
+            dummy = EditAction(str(kind), int(item["site_id"]) if "site_id" in item else -1,
+                               item.get("new_value"), item.get("hypothesis"))
             record_illegal("llm", expr, dummy, reason="bad kind")
             continue
         try:
@@ -521,12 +688,33 @@ def _parse(text: str, expr=None) -> List[EditAction]:
     return out
 
 
+# JSON text -> {"necessary", "redundant", "final_factor", "reason"}; missing keys -> "".
+def _parse_attribute(text: str, fallback: dict) -> dict:
+    try:
+        obj = _json_obj(text)
+    except LLMError as e:
+        print(f"[llm] attribute parse failed: {e}; returning fallback", flush=True)
+        return fallback
+    if not _has_attribution(obj):
+        print(f"[llm] attribute JSON invalid; returning fallback", flush=True)
+        return fallback
+    raw_factor = obj.get("final_factor")
+    if not isinstance(raw_factor, str):
+        return fallback
+    return {
+        "necessary": str(obj.get("necessary") or ""),
+        "redundant": str(obj.get("redundant") or ""),
+        "final_factor": raw_factor.strip(),
+        "reason": str(obj.get("reason") or ""),
+    }
+
+
 if __name__ == "__main__":
     from alpha_cf.pool import parse_expr
 
     f = parse_expr(sys.argv[1] if len(sys.argv) > 1 else "TsMean($close,20)")
     k = int(sys.argv[2]) if len(sys.argv) > 2 else 4
-    actions = propose(f, 0.06, k)
+    actions = propose(f, k)
     print(f"[llm] standalone got {len(actions)} legal edits")
     for a in actions:
         print(f"T(f,a)  {a.kind}@{a.site_id} {a.new_value!r}  ->  {apply_edit(f, a)}")
