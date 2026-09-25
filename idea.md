@@ -1,254 +1,631 @@
-# 基于反事实逻辑推演的因子挖掘
+# 基于反事实机制演化的因子挖掘
 
 ## 研究动机
 
-现有自动因子挖掘方法通常遵循：Search→Generation→Evaluation\.\\text\{Search\}\.
+现有自动因子挖掘通常遵循：
 
-候选因子最终通常都会得到一个整体评价：f→R\(f\)，其中 R\(f\)可以是 IC、RankIC、ICIR 或组合收益等指标。
+$$
+\mathrm{Generation}
+\rightarrow
+\mathrm{Evaluation}
+\rightarrow
+\mathrm{Selection}
+$$
 
-这种方式无法进一步回答：
+候选因子最终得到一个整体评价：
 
-> **这个因子为什么好？具体是哪一部分结构产生了有效的 Alpha？下一步应该修改哪里？**
-> 
-> 
+$$
+f\rightarrow R(f)
+$$
 
-例如，一个有效因子可能同时包含多个 feature、operator、时间窗口和子表达式。即使最终 IC 很高，现有方法也很难判断究竟是哪一个结构决策真正贡献了预测能力。
+但 factor-level reward 无法进一步回答：
 
-因此，可以认为当前因子挖掘存在两个相关问题：
+> **一个因子为什么有效？哪些结构机制真正贡献了预测能力？这些机制应如何被保留、替换或重新组合？**
 
-1. **Credit Assignment 过于粗粒度**：factor\-level reward 难以分解到具体结构决策；
+同时，高质量 Alpha 往往依赖多个结构组件之间的组合关系，仅围绕单个算子、窗口或 subtree 进行局部搜索，难以产生足够大的结构跃迁。
 
-2. **Search Efficiency 较低**：由于不知道哪些结构值得保留或修改，后续搜索仍然需要大量试错。
+因此，本工作将 **Structural Counterfactual Reasoning** 用于机制诊断，并与 evolutionary search 结合：
 
-本工作希望引入 **Structural Counterfactual Reasoning** 来解决这一问题。
+> **Counterfactual reasoning 识别有效机制，Evolutionary search 在机制层面进行新的结构探索。**
+
+整体流程为：
+
+$$
+\mathrm{Factor\ Pool}
+\rightarrow
+\mathrm{Counterfactual\ Diagnosis}
+\rightarrow
+\mathrm{Mechanism\ Credit}
+\rightarrow
+\mathrm{Macro\ Evolution}
+\rightarrow
+\mathrm{Pool\ Update}
+$$
 
 ---
 
 ## 核心 Idea
 
-对于一个已经生成并完成评价的因子 ff，我们不只记录其整体 reward，而是进一步对其结构进行**最小反事实干预**：
+对于因子 $f$，将其分解为若干具有完整金融或数学含义的结构机制：
 
-fcf=T\(f,a\),f^\{cf\}=T\(f,a\),
+$$
+M(f)=\{m_1,m_2,\ldots,m_K\}
+$$
 
-其中 aa 表示一次结构编辑操作，例如：
+每个 mechanism 包含：
 
-- Feature：Return →\\rightarrow Volume；
+- 一个简洁的语义描述；
+- 一个对应的 expression subtree。
 
-- Operator：TSMean →\\rightarrow TSMax；
+例如：
 
-- Window：20 →\\rightarrow 10；
+```text
+Mechanism:
+short-term reversal
 
-- Structure：Div →\\rightarrow Sub；
+Expression:
+-Delta(close, 5)
+```
 
-- 删除或替换某个 subtree。
+或：
 
-然后比较原因子和反事实因子的表现：
+```text
+Mechanism:
+abnormal-volume confirmation
 
-Δcf\(f,a\)=R\(T\(f,a\)\)−R\(f\)\.\\Delta^\{cf\}\(f,a\) = R\(T\(f,a\)\)\-R\(f\)\.
+Expression:
+volume / TSMean(volume, 20)
+```
 
-其核心问题是：
+Mechanism 是 counterfactual attribution、mutation、replacement 和 crossover 的基本结构单元。
 
-> **如果当初采用另一种结构设计，这个因子的表现会发生什么变化？**
-> 
-> 
+对 mechanism $m_i$ 构造 ablation：
 
-例如，一个因子的 RankIC 为 0\.05：
+$$
+T(f,m_i)
+$$
 
-由此可以得到比整体 reward 更细粒度的信息：
+其中 $T$ 表示 Remove / Neutralize，并尽量保持其他结构不变。
 
-- Return 可能是关键输入；
+重新评价得到：
 
-- TSMean 是较重要的 transformation；
-
-- Rank 对当前因子影响较弱；
-
-- 时间窗口仍存在优化空间。
-
-因此，反事实干预能够将：
-
-Factor\-level Reward\\text\{Factor\-level Reward\}
-
-进一步转化为：
-
-Structural Credit\.\\text\{Structural Credit\}\.
-
----
-
-## 方法整体思路
-
-整体方法可以形成如下闭环：
-
-Generate→Counterfactual Intervention→Structural Credit→Value Prediction→Guided Search\\boxed\{ \\text\{Generate\} \\rightarrow \\text\{Counterfactual Intervention\} \\rightarrow \\text\{Structural Credit\} \\rightarrow \\text\{Value Prediction\} \\rightarrow \\text\{Guided Search\} \}
-
-### Step 1：Factor Generation
-
-首先通过现有搜索算法生成候选因子 ff，并通过真实市场数据获得：
-
-R\(f\)\.R\(f\)\.
-
-这一部分可以直接建立在 AlphaSAGE 等现有因子搜索框架上。
-
-### Step 2：Structural Counterfactual Intervention
-
-围绕较有潜力的因子构造若干局部反事实：
-
-\{T\(f,a1\),T\(f,a2\),…,T\(f,aK\)\},\\\{T\(f,a\_1\),T\(f,a\_2\),\\ldots,T\(f,a\_K\)\\\},
-
-并通过真实评价得到：
-
-Δi=R\(T\(f,ai\)\)−R\(f\)\.\\Delta\_i = R\(T\(f,a\_i\)\)\-R\(f\)\.
-
-关键是保持 **minimal intervention**：每次只改变一个主要结构决策，其余部分保持不变。
-
-### Step 3：Structural Credit Assignment
-
-利用不同 intervention 对 reward 的影响，分析：
-
-- 哪些 feature 值得保留；
-
-- 哪些 operator 是关键结构；
-
-- 哪些时间尺度有效；
-
-- 哪些 subtree 可能是冗余结构。
-
-这样，每次因子评价不再只产生一个 scalar reward，而能够产生一组更加细粒度的结构反馈。
-
-### Step 4：Counterfactual Value Estimation
-
-如果所有可能的结构修改都实际进行 backtest，计算成本会很高。
-
-因此进一步利用已经执行过的反事实样本：
-
-\(f,a,Δcf\)\(f,a,\\Delta^\{cf\}\)
-
-训练一个 counterfactual value model：
-
-Qϕ\(f,a\)→Δcf\(f,a\),Q\_\\phi\(f,a\) \\rightarrow \\Delta^\{cf\}\(f,a\),
-
-用于预测：
-
-> 对当前因子执行某个尚未尝试的编辑动作，可能带来多大的 performance improvement。
-> 
-> 
-
-模型真正需要学习的重点不一定是精确预测 Δ\\Delta，而可以是判断：
-
-> **哪些编辑动作更值得优先尝试。**
-> 
-> 
-
-### Step 5：Counterfactual\-Guided Search
-
-对于当前因子的候选编辑动作，根据预测价值选择下一步搜索方向，例如：
-
-a∗=arg⁡max⁡a\[Qϕ\(f,a\)\+βU\(f,a\)\+λD\(f,a\)\],a^\* = \\arg\\max\_a \\left\[ Q\_\\phi\(f,a\) \+ \\beta U\(f,a\) \+ \\lambda D\(f,a\) \\right\],
+$$
+\Delta_i^{\mathrm{cf}}
+=
+R(T(f,m_i))-R(f)
+$$
 
 其中：
 
-- QϕQ\_\\phi：预测的 counterfactual improvement；
+- $\Delta_i^{\mathrm{cf}}<0$：移除后表现下降，该机制具有正贡献；
+- $\Delta_i^{\mathrm{cf}}\approx0$：该机制贡献有限；
+- $\Delta_i^{\mathrm{cf}}>0$：移除后表现改善，该机制可被进一步重构。
 
-- UU：预测不确定性，用于 exploration；
-
-- DD：结构多样性。
-
-这样，搜索从传统的：
-
-> random / reward\-driven exploration
-> 
-> 
-
-逐渐转变为：
-
-> **counterfactual\-informed exploration**。
-> 
-> 
+这些结构证据进一步用于机制级搜索，而不是直接作为单点局部编辑。
 
 ---
 
-## LLM 在其中的作用
+# 基础定义
 
-**LLM 负责提出“值得测试什么”，量化模型负责判断“什么真正有效”。**
+## Factor Reward
 
-具体来说，LLM 主要负责两个部分：
+对于因子 $f$，在每个交易日计算横截面 RankIC：
 
-### Semantic Proposal
+$$
+IC_t(f)
+=
+\operatorname{Spearman}
+\left(
+f_t,\,
+r_{t\rightarrow t+h}
+\right)
+$$
 
-根据已有因子结构和金融含义，提出具有经济语义的修改方向。
+定义：
 
-例如原因子的假设是：
+$$
+R(f)
+=
+\frac{
+\operatorname{Mean}(IC_t(f))
+}{
+\operatorname{Std}(IC_t(f))+\epsilon
+}
+$$
 
-> “短期 momentum 在异常成交量确认后具有更强预测能力。”
-> 
-> 
+即以 RankICIR 作为基础 factor reward。
 
-LLM 可以提出：
+---
 
-- 去掉 volume confirmation；
+## Pool Utility
 
-- 将 momentum 改为 reversal；
+对于因子池：
 
-- 保留原机制但改变时间尺度。
+$$
+P=\{f_1,f_2,\ldots,f_K\}
+$$
 
-### Counterfactual Intervention Proposal
+对各因子的横截面输出进行 rank normalization，记为 $\tilde f_{i,t}$，并构造等权组合信号：
 
-将这些语义假设进一步映射为具体的 expression edits。
+$$
+F_{P,t}
+=
+\frac{1}{K}
+\sum_{i=1}^{K}
+\tilde f_{i,t}
+$$
 
-而以下部分仍由算法和真实数据完成：
+定义：
 
-- factor encoding；
+$$
+U(P)
+=
+\operatorname{RankICIR}(F_P)
+$$
 
-- backtest；
+候选因子对当前 pool 的边际贡献为：
 
-- counterfactual reward；
+$$
+r_{\mathrm{pool}}(f\mid P)
+=
+U(P\cup\{f\})-U(P)
+$$
 
-- value estimation；
+---
 
-- search policy；
+## Factor Selection
 
+Pool selection 统一考虑单因子质量、组合贡献、多样性和 signal cost：
+
+$$
+S(f\mid P)
+=
+\alpha R(f)
++
+\beta r_{\mathrm{pool}}(f\mid P)
++
+\gamma D(f,P)
+-
+\lambda C_{\mathrm{cost}}(f)
+$$
+
+多样性定义为：
+
+$$
+\rho(f,g)
+=
+\frac{1}{T}
+\sum_t
+\left|
+\operatorname{Spearman}(f_t,g_t)
+\right|
+$$
+
+$$
+D(f,P)
+=
+1-\max_{g\in P}\rho(f,g)
+$$
+
+signal cost 使用相邻交易日 factor ranking 的变化作为 turnover proxy：
+
+$$
+C_{\mathrm{cost}}(f)
+=
+\frac{1}{2}
+\left[
+1-
+\frac{1}{T-1}
+\sum_t
+\operatorname{Spearman}(f_t,f_{t-1})
+\right]
+$$
+
+实际 selection 时，各项可在当前 candidate set 内统一归一化。
+
+记：
+
+$$
+\operatorname{Select}_K(\mathcal C)
+$$
+
+为依据上述原则从候选集合 $\mathcal C$ 中构建大小为 $K$ 的 factor pool。
+
+---
+
+# 方法整体设计
+
+## Step 1：Initial Pool Construction
+
+初始提供约：
+
+$$
+|\mathcal C_0|\approx200
+$$
+
+个候选因子，可来自现有搜索算法、LLM generation、人工因子库或其混合。
+
+通过统一的 pool-aware selection 构建工作池：
+
+$$
+P_0
+=
+\operatorname{Select}_{60}(\mathcal C_0)
+$$
+
+之后整个 evolutionary process 始终维护：
+
+$$
+|P_t|=60
+$$
+
+未进入 $P_0$ 的因子不再参与后续搜索。
+
+---
+
+## Step 2：Counterfactual Diagnosis
+
+每轮从当前工作池 $P_t$ 中选择一部分具有较高质量或探索价值的 factor 作为 parent：
+
+$$
+E_t\subset P_t
+$$
+
+对于每个 $f\in E_t$，LLM 将其分解为：
+
+$$
+M(f)=\{m_1,m_2,\ldots,m_K\}
+$$
+
+随后对主要 mechanism 依次执行 ablation：
+
+$$
+T(f,m_i)
+$$
+
+并计算：
+
+$$
+\Delta_i^{\mathrm{cf}}
+=
+R(T(f,m_i))-R(f)
+$$
+
+由此得到 factor 内部不同机制的结构贡献信息。
+
+---
+
+## Step 3：Mechanism Credit
+
+单因子贡献并不完全等价于其对整体 factor pool 的价值。
+
+对于 $f\in P$，定义：
+
+$$
+P_{-f}=P\setminus\{f\}
+$$
+
+则 mechanism $m$ 的 pool-level credit 为：
+
+$$
+C_{\mathrm{pool}}(m;f,P)
+=
+U(P)
+-
+U\left(
+P_{-f}\cup\{T(f,m)\}
+\right)
+$$
+
+该量衡量移除 mechanism $m$ 后整个 pool utility 的变化。
+
+因此每个 mechanism 同时具有两类证据：
+
+$$
+\Delta^{\mathrm{cf}}
+\qquad\text{and}\qquad
+C_{\mathrm{pool}}
+$$
+
+分别描述其对单因子表现和整体 pool 的作用。
+
+---
+
+## Step 4：Mechanism Memory
+
+Counterfactual diagnosis 的结果保存为结构化 Mechanism Memory：
+
+| Factor | Mechanism | Expression | $\Delta^{\mathrm{cf}}$ | $C_{\mathrm{pool}}$ | Action |
+|---|---|---|---:|---:|---|
+| $f_1$ | short-term reversal | `-Delta(close,5)` | -0.021 | 0.014 | Preserve |
+| $f_1$ | volume confirmation | `volume/Mean(volume,20)` | -0.006 | 0.018 | Preserve |
+| $f_2$ | volatility normalization | `x/Std(ret,20)` | 0.004 | -0.001 | Replace |
+
+Mechanism Memory 记录已经被真实 intervention 验证过的结构证据，并作为后续 evolution 的上下文。
+
+---
+
+## Step 5：Macro Evolution
+
+利用当前 parent 的 counterfactual evidence 和 Mechanism Memory 生成新的 factor。
+
+主要包含三类操作。
+
+### Mechanism Mutation
+
+保留高价值机制，对其他部分进行结构重写：
+
+$$
+f'
+=
+\operatorname{Mutate}
+(
+m_{\mathrm{keep}},
+m_{\mathrm{replace}}
+)
+$$
+
+### Mechanism Replacement
+
+将某个完整机制替换为新的经济或数学结构，例如：
+
+$$
+\mathrm{Momentum}
+\rightarrow
+\mathrm{Reversal}
+$$
+
+### Credit-Aware Crossover
+
+对于两个 parent：
+
+$$
+f_A,\qquad f_B
+$$
+
+选择其中具有较强结构证据的 mechanism 进行重组：
+
+$$
+f_{\mathrm{child}}
+=
+\operatorname{Combine}
+\left(
+M_A^{\mathrm{selected}},
+M_B^{\mathrm{selected}}
+\right)
+$$
+
+生成本轮 offspring：
+
+$$
+O_t
+$$
+
+---
+
+## Step 6：Offspring Refinement
+
+新生成的 factor 首先使用默认参数进行基础评价。
+
+对于表现较好的候选，对 operator 中的离散常量进行小规模枚举。例如：
+
+$$
+W_{\mathrm{window}}
+=
+\{5,10,20,40,60\}
+$$
+
+对于参数化因子：
+
+$$
+f(x;\theta)
+$$
+
+在预定义合法集合 $\Theta$ 中选择：
+
+$$
+\theta^*
+=
+\arg\max_{\theta\in\Theta}
+R(f(\cdot;\theta))
+$$
+
+得到 refined offspring。
+
+---
+
+## Step 7：Pool Update
+
+将当前工作池与 offspring 合并：
+
+$$
+\mathcal C_{t+1}
+=
+P_t\cup O_t
+$$
+
+并重新执行统一的 pool selection：
+
+$$
+P_{t+1}
+=
+\operatorname{Select}_{60}(\mathcal C_{t+1})
+$$
+
+因此每一轮 population evolution 为：
+
+$$
+P_t
+\rightarrow
+P_t\cup O_t
+\rightarrow
+P_{t+1}
+$$
+
+重复若干轮后得到最终工作池：
+
+$$
+P_G
+$$
+
+---
+
+## Step 8：Final Selection
+
+搜索完成后，从最终工作池中选择约 30 个最终因子：
+
+$$
+P_{\mathrm{final}}
+=
+\operatorname{Select}_{30}(P_G)
+$$
+
+整个 pool 生命周期为：
+
+$$
+200
+\rightarrow
+60
+\rightarrow
+60
+\rightarrow
+\cdots
+\rightarrow
+60
+\rightarrow
+30
+$$
+
+其中 60 为 evolutionary working pool，30 为最终输出的 factor pool。
+
+---
+
+# LLM 在其中的作用
+
+LLM 主要负责：
+
+### Mechanism Decomposition
+
+将 factor 分解为少量具有明确金融或数学语义、并能映射到 expression subtree 的 mechanism。
+
+### Counterfactual Proposal
+
+为 mechanism 构造对应的 Remove / Neutralize intervention。
+
+### Evolution Proposal
+
+结合当前 factor 的 counterfactual evidence 与 Mechanism Memory，执行 mutation、replacement 和 crossover。
+
+以下部分由真实数据和程序完成：
+
+- factor execution；
+- reward calculation；
+- counterfactual evaluation；
+- pool utility；
+- parameter enumeration；
 - factor selection。
 
-## Research Questions
+基本原则为：
 
-目前可以将论文问题收敛为三个：
+> **LLM 提出结构假设，真实市场数据提供结构证据。**
 
-### RQ1：Structural Attribution
+---
 
-**Which structural components contribute to an alpha's predictive performance?**
+# Data Protocol
 
-### RQ2：Counterfactual Prediction
+数据划分为：
 
-**Can observed structural interventions predict the value of unexplored modifications?**
+$$
+D_{\mathrm{train}}=2010\text{-}2021
+$$
 
-### RQ3：Search Efficiency
+$$
+D_{\mathrm{valid}}=2022
+$$
 
-**Can counterfactual feedback improve alpha discovery under a limited evaluation budget?**
+$$
+D_{\mathrm{test}}=2023\text{-}2026.04
+$$
 
-## 初步实验方案
+Factor search、counterfactual diagnosis、parameter refinement 和 iterative pool evolution 使用 Train。
 
-目前比较合适的方式是直接基于 **AlphaSAGE** 进行扩展。
+Validation 用于搜索完成后的 final factor selection：
 
-主要 baseline 可以包括：
+$$
+60\rightarrow30
+$$
+
+Test 保持封存，用于最终实验评价。
+
+---
+
+# Research Questions
+
+## RQ1：Mechanism Attribution
+
+**Can structural counterfactual interventions identify predictive and transferable mechanisms inside alpha factors?**
+
+## RQ2：Search Efficiency
+
+**Can counterfactual mechanism evidence improve evolutionary alpha search under a fixed evaluation budget?**
+
+重点比较：
+
+$$
+\mathrm{Blind\ Evolution}
+\quad\mathrm{vs.}\quad
+\mathrm{Counterfactual\text{-}Guided\ Evolution}
+$$
+
+## RQ3：Pool Synergy
+
+**Can pool-level counterfactual credit discover more complementary alpha factors?**
+
+重点考察：
+
+$$
+C_{\mathrm{pool}}
+$$
+
+是否能够帮助构建具有更强组合表现和更低冗余度的 factor pool。
+
+---
+
+# 初步实验设计
+
+主要 baseline：
 
 - Random / GP Search；
-
-- RL\-based Alpha Mining；
-
 - AlphaGen；
-
 - AlphaSAGE；
+- LLM-based Evolution；
+- Counterfactual-Guided Evolution。
 
-- LLM\-based Alpha Search。
+主要消融：
 
-主要消融可以包括：
+- w/o Counterfactual Diagnosis；
+- w/o Pool-Level Credit；
+- Blind / Random Crossover；
+- w/o Mechanism Memory；
+- w/o Pool-Aware Selection；
+- w/o Parameter Refinement。
 
-- w/o Counterfactual Intervention；
+---
 
-- w/o Counterfactual Value Model；
+# 核心研究目标
 
-- Random Intervention；
+本工作利用 counterfactual intervention 识别 factor 内部真正有效的结构机制，并将这些机制作为 evolutionary search 的结构先验。
 
-- w/o LLM Semantic Intervention；
+最终形成：
 
-- w/o Uncertainty Exploration。
+$$
+\mathrm{Factor\ Search}
+\rightarrow
+\mathrm{Mechanism\ Understanding}
+\rightarrow
+\mathrm{Mechanism\ Evolution}
+$$
 
+即从公式级搜索进一步转向：
+
+> **基于结构证据的机制级 Alpha Discovery。**
