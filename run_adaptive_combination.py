@@ -211,7 +211,10 @@ def remove_multicollinearity_vif(x, to_pred, vif_threshold=10.0):
 
 def load_alpha_pool(raw) -> Tuple[List[Expression], List[float]]:
     exprs_raw = raw['exprs']
-    weights = raw['weights']
+    if 'weights' in raw:
+        weights = raw['weights']
+    else:
+        weights = None
     exprs = [eval(expr_raw.replace('open', 'open_').replace('$', '')) for expr_raw in exprs_raw]
     return exprs, weights
 
