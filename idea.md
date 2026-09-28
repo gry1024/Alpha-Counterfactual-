@@ -536,7 +536,7 @@ LLM 主要负责：
 数据划分为：
 
 $$
-D_{\mathrm{train}}=2010\text{-}2021
+D_{\mathrm{train}}=2011\text{-}2021
 $$
 
 $$
@@ -567,7 +567,7 @@ Test 保持封存，用于最终实验评价。
 
 ## RQ2：Search Efficiency
 
-**Can counterfactual mechanism evidence improve evolutionary alpha search under a fixed evaluation budget?**
+**Can counterfactual mechanism evidence improve evolutionary alpha search under a fixed number of evolutionary rounds?**
 
 重点比较：
 

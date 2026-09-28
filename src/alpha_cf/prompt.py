@@ -1,146 +1,125 @@
-"""Model instructions: free structural hypotheses, measured evidence, verifiable edits."""
-from alphagen.data.expression import Operators, GetGreater, GetLess
+"""Task templates following utils.prompt; operator meanings follow alphagen."""
+from utils.prompt import PROMPT_HEAD
 
-SYSTEM = """You are researching structural mechanisms inside quantitative factor expressions.
-Return ONE JSON object without Markdown fences or surrounding prose. Give concise, substantive
-structural explanations, not private reasoning traces. Do not invent measurements or promise returns.
+PROMPT_FEATURES_AND_OPERATORS = """
+The available features and operators are listed below. Use functional notation exactly.
+Features: $open/$high/$low/$close are daily prices; $vwap is volume-weighted average
+price; $volume is traded volume. Prefer returns, ratios or ranks when combining scales.
+Scalars are decimals (0.0, 1.0, 0.000001); windows/lags are concrete integers, not %d.
+Do not use scientific notation, Python/infix syntax, placeholders or unnamed operators.
 
-EXPRESSION LANGUAGE
-Use only $open, $close, $high, $low, $volume, $vwap and these operators (name/argument count):
-""" + ", ".join(f"{op.__name__}/{op.n_args()}" for op in dict.fromkeys([*Operators, GetGreater, GetLess])) + """
-Use functional notation, not infix, Python, Qlib syntax, or named placeholders.
-Example: Mul(Sub(0.0,TsDelta($close,5)),Div($volume,TsMean($volume,20))).
-Scalar literals contain a decimal point (1.0); rolling windows/lags are integers (20).
-Greater/GetGreater mean elementwise maximum; Less/GetLess mean minimum, not Boolean tests.
-Ref(x,d) reads d days into the PAST; d>=0. TsDelta(x,d)=x[t]-x[t-d], d>=1.
-Other rolling windows are >=2. TsDiv(x,w)=x[t]/mean(x,w).
-TsPctChange compares the last and first observations within w days.
-Respect the supplied node, depth and total lookback limits, including nested rolling operators.
-Log, division and fractional powers may be numerically undefined. Prefer sensible domains;
-never hide a new financial mechanism inside a purported numerical safeguard.
+Unary: Abs(x), Log(x), SLog1p(x)=sign(x)*log(1+abs(x)), Inv(x)=1/x,
+Sign(x), Rank(x)=ascending cross-sectional rank.
+Binary: Add(x,y), Sub(x,y), Mul(x,y), Div(x,y), Pow(x,y).
+GetGreater(x,y)=elementwise maximum; GetLess(x,y)=elementwise minimum.
+Greater/Less are aliases for maximum/minimum, NOT Boolean comparisons.
+Ref(x,d)=x[t-d], d>=0. TsDelta(x,d)=x[t]-x[t-d], d>=1.
+Other rolling operators require d>=2:
+TsMean/TsSum/TsStd/TsVar(x,d): rolling mean/sum/sample standard deviation/sample variance.
+TsMin/TsMax/TsMed(x,d): rolling minimum/maximum/median.
+TsMinMaxDiff(x,d)=max(x,d)-min(x,d); TsMaxDiff(x,d)=x-max(x,d);
+TsMinDiff(x,d)=x-min(x,d); TsMad(x,d)=mean absolute deviation about the rolling mean.
+TsIr(x,d)=mean(x,d)/std(x,d); TsDiv(x,d)=x/mean(x,d).
+TsSkew/TsKurt(x,d): rolling skewness/excess kurtosis of the supplied input.
+TsRank(x,d): descending time-series rank; a unique maximum has rank 1/d, minimum 1.
+TsPctChange(x,d): last/first-1 over the d observations.
+TsWMA(x,d): linearly weighted rolling mean; TsEMA(x,d): exponentially weighted mean.
+TsCov/TsCorr(x,y,d): rolling covariance/correlation of two series.
+Keep log inputs positive and denominators meaningful. Constants are not standalone alphas.
+Nested windows consume cumulative history; respect the supplied expression limits.
+Example: Div(Sub($close,$open),Add(Sub($high,$low),0.000001)).
 
-AST REFERENCES
-Root path is []; unary/rolling operand is child 0; binary/pair-rolling inputs are children 0 and 1.
-Windows are parameters, NOT child nodes. A path identifies one occurrence, even if text repeats.
-Copy source subtrees and parent expressions exactly. Mechanism names are free descriptions,
-not categories: use a complete economic or mathematical interpretation grounded in the actual AST.
-A description is a hypothesis, not evidence that the factor works.
-
-MEASUREMENTS
-R is SIGNED daily cross-sectional RankICIR, not absolute IC. Higher R is better.
-delta_cf=R(intervened factor)-R(parent): negative supports the removed structure in that context.
-pool_credit=U(original pool)-U(pool with parent replaced): positive supports its pool value.
-U ranks each factor, combines with equal weights, and evaluates the resulting signal.
-Small effects, conflicting signs and coverage changes deserve caution; no sign is a universal rule.
-Attribution is conditional on the exact parent, intervention baseline and historical pool.
-Transferred or reparameterized mechanisms do NOT inherit measured credit.
+Evaluation: R is SIGNED daily cross-sectional RankICIR; larger is better.
+U is RankICIR of an equal-weight combination of rank-normalized factors.
+delta_cf=R(ablated)-R(parent): negative means removal hurt the individual factor.
+pool_credit=U(pool)-U(pool with parent replaced): positive means removal hurt the pool.
+Near-zero effects are weak evidence. Conflicting signs reveal individual/pool tradeoffs.
+A null score means unmeasured, not zero. Credits are conditional on the exact parent,
+intervention and pool; they are not guarantees for transferred or modified mechanisms.
 """
 
+PROMPT_DIAGNOSIS = """
+Your task is to identify the useful structural units in this factor and propose independent
+counterfactual ablations. The program will measure them; do not predict numerical credit.
 
-DIAGNOSE = """TASK: identify the main mechanisms of ONE parent and propose independent counterfactuals.
+1. Read the whole formula and its economic hypothesis. Identify up to {mechanism_count}
+   coherent mechanisms: an interaction, a return signal, a volume transformation,
+   smoothing, normalization, or another substantive unit supported by the actual formula.
+   Do not fill the count with scalar leaves, sign scaffolding, epsilon guards or
+   algebraically invariant edits such as removing centering inside a correlation.
+2. Copy each mechanism's path from the supplied AST. Root is []; unary/rolling input is
+   child 0; binary/pair-rolling inputs are children 0 and 1. Windows are not children.
+   A mechanism can be nested or the whole factor. Avoid redundant overlapping diagnoses.
+3. Propose one baseline at that path. "remove" keeps an exact proper descendant of the
+   selected subtree. "neutralize" replaces the effect with an interpretable baseline:
+   e.g. 0.0 for an additive contribution, 1.0 for a multiplicative contribution.
+   Do not add new input features or replace the mechanism with a new alpha hypothesis.
+4. Read the resulting WHOLE expression: it must still vary across stocks. For a root
+   transform, keeping one of its inputs is often more informative than a constant.
+   Each ablation starts from the original parent; other paths stay unchanged. Explain
+   which behavior is removed and which is retained, including limitations of the comparison.
+5. If no defensible nonconstant intervention exists, keep the mechanism with null mode
+   and replacement. If cf_enabled is false, return semantic decomposition only, with
+   all modes and replacements null. Check paths and syntax before returning the JSON.
 
-The context provides a parent expression, its AST, measurements, limits, a mechanism count budget,
-and cf_enabled. Identify UP TO that many meaningful mechanisms; fewer is fine. There is no list of
-allowed mechanism names. Avoid filling the budget with redundant raw features or arbitrary fragments.
-Nested mechanisms may be meaningful, but their independently measured effects are not additive.
-A root mechanism is allowed when it describes a complete transform or interaction.
+Worked example (format and local editing, not a required factor):
+Parent: Mul(Sub(Div(Ref($close,5),$close),1.0),Div($volume,TsMean($volume,20)))
+{{"mechanisms":[{{"path":[1],"description":"Abnormal-volume scaling of a reversal signal",
+"mode":"neutralize","replacement":"1.0",
+"reason":"Remove volume-dependent amplification while retaining the five-day reversal."}}]}}
+This changes only the right multiplicative input. The reversal is still a complete signal.
 
-Do NOT suppress a mechanism just because intervention is difficult. First identify it, then choose
-one interpretable baseline or mark it unmeasurable. Do not design interventions to maximize credit.
-
-If cf_enabled=true, for each mechanism provide ONE Remove/Neutralize proposal:
-- remove: retain a featured proper descendant of this mechanism, removing a transform, wrapper
-  or interaction. The replacement must be an exact existing descendant. Root unwrapping is allowed.
-- neutralize: substitute a contextually justified baseline. Prefer an identity where available:
-  additive/subtractive contribution -> 0.0; multiplicative contribution or denominator -> 1.0.
-  These are examples, not an exhaustive list. A contextual baseline may use the mechanism's existing
-  inputs, but must not add a new input feature or an unrelated predictive structure.
-- Only the selected path will change; the rest of the parent stays identical. Each intervention
-  starts from the original parent, never from another intervened version.
-- Explain the specific effect being removed and the inputs/behavior retained. For example,
-  TsCorr(x,y,w)->x compares the interaction with an x-only baseline; it does not isolate a unique,
-  context-free "correlation contribution". Distinguish this from an algebraic identity.
-- If every defensible baseline is degenerate or unidentifiable, return mode=null, replacement=null
-  with a reason. A constant whole-factor baseline has undefined IC, not zero measured contribution.
-- Changing reversal into a new momentum formula is evolution, not counterfactual ablation.
-
-If cf_enabled=false, perform semantic decomposition only. Set mode and replacement to null.
-Do not construct interventions or claim evidence. This is the blind-evolution ablation.
-
-Return exactly this shape (repeat mechanism items as needed):
-{"mechanisms":[
-  {"path":[1],"description":"abnormal-volume confirmation",
-   "subtree":"Div($volume,TsMean($volume,20))",
-   "mode":"neutralize","replacement":"1.0",
-   "reason":"Remove volume-dependent scaling while retaining the other multiplicative input."}
-]}
-The example is a format illustration, not a required mechanism or path. Use this parent's real AST.
-Context:
+Given parent: {parent}
+Parent R: {reward}
+Available subtrees: {nodes}
+cf_enabled: {cf_enabled}
+Return only {{"mechanisms":[{{"path":[],"description":"...","mode":"remove|neutralize|null",
+"replacement":"exact baseline expression or null","reason":"brief intervention rationale"}}]}}.
+Use actual JSON null where appropriate, not the string "null".
 """
 
+PROMPT_EVOLUTION = """
+Your task is to generate {offspring_count} new factors from the parent, donor and their
+counterfactual evidence. The purpose is to improve signed predictive quality and pool
+complementarity through structural changes. You propose hypotheses; market data decides.
 
-EVOLVE = """TASK: generate up to offspring_limit DISTINCT, substantive offspring as full expressions.
+1. Read each parent mechanism with its baseline, delta_cf and pool_credit. Preserve useful
+   behavior, simplify unsupported components and redesign harmful ones. If the signs
+   conflict, explain the individual/pool tradeoff. With no measurements, state a hypothesis
+   rather than claiming empirical support. Historical memory is evidence, not a recipe.
+2. Use varied modification strategies across this batch, without forcing weak proposals:
+   - mutation: keep a meaningful mechanism intact and redesign the surrounding structure;
+   - replacement: replace one complete diagnosed mechanism with an economically motivated
+     alternative, keeping the rest of that parent unchanged;
+   - crossover: compose intact mechanisms from BOTH the current parent and supplied donor.
+   If they are the same factor, do not claim crossover. In random-crossover mode, the donor
+   is assigned randomly; use that donor rather than selecting another from memory.
+3. Go beyond window changes, scalar tuning, sign flips and rank-equivalent wrappers.
+   Try genuinely different representations of the hypothesis: interaction versus additive
+   confirmation, price versus return behavior, conditional amplification versus risk
+   normalization. A simpler formula may be a better hypothesis than a more complex one.
+   These are examples, not a menu of required operators. Avoid arbitrary operator novelty.
+4. Propose distinct full expressions with concrete default parameters. Prefer at most two
+   different tunable windows; a one-day return lag may remain fixed. The program refines
+   windows later. Do not copy a full parent, donor, existing pool factor or earlier child.
+   Do not regenerate old complete factors merely because they appear in memory.
+5. For each child give one concise explanation naming the retained/changed mechanisms,
+   the supplied evidence motivating the change and the expected behavior to test. Do not
+   claim higher measured R, lower correlation or profitability before evaluation.
+6. Before responding, correct operator names, arity, scalar/window types, paths used in
+   your own proposal, numerical domains and expression limits. Return only the corrected
+   expressions, with matching operations and explanations in the same order.
 
-Use current_evidence and historical_memory to propose structural hypotheses. Read BOTH delta_cf and
-pool_credit, their magnitudes, baseline and coverage. Action tags are suggestions, not permissions.
-A mechanism may help its parent but hurt the pool, or vice versa. State the tradeoff behind your choice.
-Unmeasured mechanisms are exploratory hypotheses, not supported discoveries.
+Given parent and its evidence: {parent}
+Given donor and its evidence: {donor}
+Historical measured mechanisms: {historical_memory}
+Existing pool and earlier children: {existing_expressions}
+random_crossover: {random_crossover}
+Expression limits: {limits}
 
-CHOOSE THE SEARCH
-Choose how many proposals use each operation; there are no per-operation quotas.
-- mutation: select one current parent, keep one or more meaningful mechanisms intact, and rewrite
-  the surrounding structure. Usually preserve well-supported mechanisms, but explain uncertainty.
-- replacement: replace one complete diagnosed mechanism at path. All structure outside that path
-  must remain identical. A strong mechanism can be replaced to test a justified alternative;
-  its current benefit does not prove that no better alternative exists.
-- crossover: choose TWO DIFFERENT current parents, select one or more mechanisms from EACH, and
-  compose them into a full expression. Choose a fresh combination for each proposal where useful.
-  The connecting operators and surrounding structure are yours to design; no fixed composition
-  template is imposed. Prefer plausible complementarity over duplicating correlated transformations.
-
-parents must reference the supplied current parents. keep must reference current_evidence exactly
-by parent, path and subtree. Every declared kept subtree must literally occur in the child; do not
-claim preservation after silently changing its window, sign or inputs. If a source occurs twice in
-the keep list, it must appear twice in the child.
-Historical memory supplies relevant successes, failures and conflicting examples. It can inspire
-replacement or surrounding structure, but cannot revive an old complete factor or certify a child.
-No measured numbers are requested in your output.
-
-RANDOM-CROSSOVER ABLATION
-If random_pairs is supplied, it assigns an independent random pair to each crossover proposal.
-Consume these pairs IN ORDER of crossover appearances in children, starting with pair 0.
-Use exactly that pair's parents and mechanisms for that crossover; you still design the composition.
-Do not select pairs by their evidence or skip an inconvenient pair. If random_pairs is null,
-choose combinations yourself using the dual evidence. An empty list means crossover is unavailable.
-
-DEFAULT PARAMETERS AND REFINEMENT
-First output a complete executable expression with concrete default parameters.
-Window-only or scalar-only edits are refinement, not macro evolution.
-Optionally provide refine, a list of at most two parameter positions IN THE NEW CHILD:
-  window: path addresses a rolling operator; values must come from the supplied window_grid.
-  constant: path addresses a scalar Constant; role is coefficient, exponent or threshold;
-            values must come from the supplied constant_grid.
-Omit values to use the configured grid. Program execution, not you, chooses the best values.
-Select parameters that meaningfully change the signal. Do not tune identity/sign-construction
-constants, tiny stability epsilons, outer additive offsets, or positive outer rescalings that
-cannot change ranks. Parameters inside a preserved mechanism may be refined later, but that new
-instance must not inherit the source mechanism's credit.
-Omit refine or return [] to use the default of the first two window positions.
-The program refines only the best default-parameter candidates within a small fixed trial budget.
-
-OUTPUT
-{"children":[
-  {"operation":"mutation|replacement|crossover",
-   "parents":["exact current parent expression"],
-   "expression":"complete child expression",
-   "keep":[{"parent":"exact current parent expression","path":[0],"subtree":"exact source subtree"}],
-   "path":[1],
-   "reason":"Specific structural hypothesis; cite the supplied evidence and any tradeoff.",
-   "refine":[{"path":[0],"kind":"window","values":[5,10,20]},
-             {"path":[1,1],"kind":"constant","role":"coefficient","values":[0.5,1.0,2.0]}]
-}]}
-path is required only for replacement; keep may be empty for replacement.
-Use one parent for mutation/replacement and two for crossover. Use exact valid syntax, not the
-schema placeholders. All accepted children will be evaluated; pool selection decides survival.
-Context:
+Output format (all three arrays have {offspring_count} entries):
+{{"expressions":["complete executable expression"],
+"operations":["mutation|replacement|crossover"],
+"explanations":["brief structural hypothesis grounded in the supplied evidence"]}}
+Return one JSON object, without Markdown or any other text.
 """
