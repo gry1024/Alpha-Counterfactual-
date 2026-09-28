@@ -56,7 +56,8 @@ class CounterfactualTests(unittest.TestCase):
 
     def test_seed_library_and_full_window_grid(self):
         seeds = json.loads((Path(__file__).resolve().parents[1] / "start_pool.json").read_text())["exprs"]
-        self.assertEqual(len(set(seeds)), 200)
+        self.assertEqual(len(seeds), 150)
+        self.assertEqual(len(set(seeds)), 150)
         for text in seeds:
             parse(text, self.args)
         expr = parse("Div(TsMean($close,5),TsMean($close,10))", self.args)

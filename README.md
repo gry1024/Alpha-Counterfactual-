@@ -3,7 +3,7 @@
 按 [idea.md](idea.md) 实现反事实机制演化，沿用 `alpha_knowledge` 的 pool / trainer / 入口组织。表达式、解析器、Qlib 数据和基础统计复用仓库现有实现。
 
 ```text
-200 个种子 → Train 选 60 个
+150 个种子 → Train 选 60 个
 每轮：选择 parent → 机制消融 → 双重 credit → 机制记忆
      → mutation / replacement / crossover → 窗口枚举 → 重选 60 个
 最后：Validation 选 30 个 → 冻结公式 → 调用原 run_adaptive_combination.py
@@ -37,7 +37,14 @@ python train_cf.py --instrument csi300 --cuda 0 --rounds 10
 
 ## 种子与数据
 
-[start_pool.json](start_pool.json) 包含 200 个可读公式：40 类结构 × 5 个窗口。包括收益、价格偏离、日内/隔夜、波动、成交量异常、量价相关、影线、流动性以及量价交互。文件记录 family、window 及公式顺序的对应关系，不导入旧 GP/PPO/LLM 实验的入选公式或权重。
+[start_pool.json](start_pool.json) 的 `exprs` 直接保存 150 条表达式，按 Alpha158（30）、AlphaSAGE（50）、AlphaPROBE（50）、AlphaGen（20）的顺序排列。后三组原样保留来源池的表达式及顺序，不携带权重或评分。
+
+Alpha158 按结构类别和时间尺度精选，覆盖 K 线形态、相对价格、动量、均线、波动、区间位置、价量相关和成交量变化，窗口涵盖 5、10、20、30、60 日；未使用收益排名或相关性筛选。依据本地 Qlib `Alpha158DL` 转写为现有算子语法，保留原始比率方向与 1e-12 分母稳定项。按顺序选取：KMID、KLEN、KMID2、KUP2、KLOW2、KSFT2、VWAP0、ROC5、ROC20、ROC60、MA10、MA30、STD5、STD20、STD60、MAX20、MIN20、VSUMP10、VSUMP60、SUMP10、SUMP60、RSV5、RSV30、CORR30、CORR60、CORD20、VMA5、VMA60、VSTD20、WVMA20。
+
+来源文件：
+- AlphaSAGE：`data/gfn_logs/pool_50/gfn_gnn_csi300_50_2-0.01-1.0-1.0-1.0-0.3-linear-0.0/pool_9999.json`
+- AlphaPROBE：`data/knowledge_logs/pool_50/kg_dag_and_bayesian_icir_and_mutl_new_no_decay_MiniMax-M3_5_csi300_0.5_7_50_0.9_50_20_0.006_True_True_False_True_0.7_0.1_0.05/pool_20.json`
+- AlphaGen：`data/ppo_logs/pool_20/ppo_csi300_20_0-20260905132532/ppo_csi300_20_0_20260905132532/200704_steps_pool.json`
 
 种子方向仅在 Train 上确定：负 RankICIR 的公式显式写成 `Sub(0.0,expr)`，然后统一选择。后续 offspring、消融、Validation、Test 均按原有符号打分，不取绝对 R，也不自动翻转。种子库是待检验的候选结构，不代表每个公式都有效。
 

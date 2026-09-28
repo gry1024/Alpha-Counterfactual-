@@ -12,10 +12,7 @@
 
 ## 1.1 候选种子与方向学习
 
-输入 `--start-pool`，默认 `start_pool.json`。文件中包含 `description` 与 `exprs` 两段，`exprs` 是 200 个候选：
-- **结构数 40** × **窗口数 5**（窗口集合见 `--windows`，默认 `[5, 10, 20, 40, 60]`）
-- 类型覆盖：reversal、vol ratio、volume scaling、price-volume correlation、intraday range ratio、skew/kurtosis、return × volume 交互等。
-- `description` 注明"direction fitted on Train only"，意味着每个种子方向只在 `train` 段反向一次。
+输入 `--start-pool`，默认 `start_pool.json`。`exprs` 直接保存 150 个候选表达式，依次为 Alpha158 精选 30 个、AlphaSAGE 50 个、AlphaPROBE 50 个、AlphaGen 20 个。Alpha158 按结构类别和时间尺度覆盖选取；另外三组原样导入指定历史池。来源和 Alpha158 名单见 README，方向学习仍只在 Train 上进行。
 
 逐个种子执行：
 
@@ -32,7 +29,7 @@ for seed in seeds:
 要点：
 - 方向学习只发生在 Train（split 由 `train_cf.load_data` 用 `SPLITS["train"]` 决定）。
 - 反转后必须重新 `evaluate`，若仍 `< 0` 则保留 `Sub` 后的版本（不再二次反转）。
-- 落选的种子不进入 `pool.exprs`，且不再作为后续步骤的候选——`Select_60` 是严格从这 200 个里挑 60 个。
+- 落选的种子不进入 `pool.exprs`，且不再作为后续步骤的候选——`Select_60` 是严格从这 150 个里挑 60 个。
 
 ---
 
@@ -146,7 +143,7 @@ def train(args):
     data, target = load_data(args, "train")           # StockData + 20-day ret label
     pool   = AlphaCFPool(data, target, args)
     trainer = AlphaCFTrainer(pool, args, log_dir)
-    seeds   = json.loads(Path(args.start_pool).read_text())["exprs"]   # 200
+    seeds   = json.loads(Path(args.start_pool).read_text())["exprs"]   # 150
     trainer.train(seeds)                              # 走 initialize + 10 rounds
 ```
 

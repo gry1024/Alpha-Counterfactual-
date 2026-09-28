@@ -50,6 +50,8 @@ counterfactual ablations. The program will measure them; do not predict numerica
 2. Copy each mechanism's path from the supplied AST. Root is []; unary/rolling input is
    child 0; binary/pair-rolling inputs are children 0 and 1. Windows are not children.
    A mechanism can be nested or the whole factor. Avoid redundant overlapping diagnoses.
+   Do not select root [] or a bare leaf (a path that resolves to a constant like 0.0 or 1.0);
+   the ablated result must still vary across stocks.
 3. Propose one baseline at that path. "remove" keeps an exact proper descendant of the
    selected subtree. "neutralize" replaces the effect with an interpretable baseline:
    e.g. 0.0 for an additive contribution, 1.0 for a multiplicative contribution.
@@ -82,6 +84,11 @@ PROMPT_EVOLUTION = """
 Your task is to generate {offspring_count} new factors from the parent, donor and their
 counterfactual evidence. The purpose is to improve signed predictive quality and pool
 complementarity through structural changes. You propose hypotheses; market data decides.
+
+Hard syntax rules (verify before returning JSON): Sub(x,y) requires y as a NUMERIC scalar
+(0.0, 1.0, 0.000001), never another expression; every '(' needs its matching ')'; the
+result must contain at least one of $open/$high/$low/$close/$vwap/$volume (no bare
+constants); keep cumulative window+lookback within {limits}.
 
 1. Read each parent mechanism with its baseline, delta_cf and pool_credit. Preserve useful
    behavior, simplify unsupported components and redesign harmful ones. If the signs

@@ -4,7 +4,7 @@
 每个文档详细列出：所用类/函数、关键参数默认值、reward 计算公式、伪代码流程。
 
 - [初始化](01_Initialize.md)：`train_cf.load_data`；`AlphaCFTrainer.initialize`；`AlphaCFPool.evaluate/select`。  
-  候选种子 200 = 40 结构 × 5 窗口；方向学习只在 Train；`R(f)` = signed RankICIR。
+  候选种子 150 = Alpha158 30 + AlphaSAGE 50 + AlphaPROBE 50 + AlphaGen 20；方向学习只在 Train；`R(f)` = signed RankICIR。
 - [反事实诊断](02_Counterfactual_Diagnosis.md)：`AlphaCFTrainer.select_parents/diagnose`；`expression.ablate/walk`；`PROMPT_DIAGNOSIS`。  
   `parents=20`（10 探索 + 10 利用）；`mechanisms=3`；`delta_cf=R(T(f,m))-R(f)`。
 - [机制贡献](03_Mechanism_Credit.md)：`AlphaCFTrainer.diagnose`；`AlphaCFPool.utility/score_signals`。  

@@ -214,7 +214,7 @@ else:
 ## 8.9 完整生命周期汇总
 
 ```
-200  →  Select_60  (init: direction learning on Train)
+150  →  Select_60  (init: direction learning on Train)
 60   →  diagnose+evolve (round 1, 10 parents × 5 offspring)
 60   →  diagnose+evolve (round 2, ...)
 ...
