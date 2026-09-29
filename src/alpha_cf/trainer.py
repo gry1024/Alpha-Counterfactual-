@@ -35,21 +35,35 @@ class AlphaCFTrainer:
     def ask(self, prompt, context):
         user_prompt = PROMPT_FEATURES_AND_OPERATORS + prompt.format(
             **{key: json.dumps(value, ensure_ascii=False) for key, value in context.items()})
-        self.record("llm_request", system_prompt=PROMPT_HEAD, user_prompt=user_prompt)
-        text, finish_reason = self.model.chat_generate(
-            self.client, system_prompt=PROMPT_HEAD, user_prompt=user_prompt, temperature=self.args.temperature)
-        self.record("llm_response", response=text, finish_reason=finish_reason)
-        text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
-        try:
-            result = json.loads(text)
-        except json.JSONDecodeError:
-            block = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.S)
-            if block is None:
-                raise ValueError("Model response is not a JSON object")
-            result = json.loads(block[1])
-        if not isinstance(result, dict):
-            raise ValueError("Model response must be a JSON object")
-        return result
+        for attempt in range(1, 4):
+            self.record("llm_request", attempt=attempt, system_prompt=PROMPT_HEAD, user_prompt=user_prompt)
+            text, finish_reason = self.model.chat_generate(
+                self.client, system_prompt=PROMPT_HEAD, user_prompt=user_prompt, temperature=self.args.temperature)
+            self.record("llm_response", attempt=attempt, response=text, finish_reason=finish_reason)
+            try:
+                text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S).strip()
+                if not text:
+                    raise ValueError("Model response is empty after removing thinking content")
+                try:
+                    result = json.loads(text)
+                except json.JSONDecodeError:
+                    block = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.S)
+                    if block is None:
+                        raise ValueError("Model response is not a JSON object")
+                    result = json.loads(block[1])
+                if not isinstance(result, dict):
+                    raise ValueError("Model response must be a JSON object")
+                keys = ("mechanisms",) if prompt == PROMPT_DIAGNOSIS else ("expressions", "operations", "explanations")
+                if not all(isinstance(result.get(key), list) for key in keys):
+                    raise ValueError(f"Expected required list fields: {', '.join(keys)}")
+                if prompt == PROMPT_EVOLUTION and not all(
+                        len(result[key]) == context["offspring_count"] for key in keys):
+                    raise ValueError("Expected matching expressions, operations and explanations for each offspring")
+                return result
+            except ValueError as exc:
+                self.record("invalid_llm_response", attempt=attempt, error=str(exc))
+                if attempt == 3:
+                    raise
 
     def evaluate(self, text):
         try:
@@ -128,9 +142,6 @@ class AlphaCFTrainer:
             random_crossover=self.args.random_crossover,
             limits=dict(nodes=self.args.max_nodes, depth=self.args.max_depth, lookback=self.args.max_backtrack)))
         expressions, operations, explanations = (result[key] for key in ("expressions", "operations", "explanations"))
-        if not all(isinstance(items, list) and len(items) == self.args.offspring
-                   for items in (expressions, operations, explanations)):
-            raise ValueError("Expected matching expressions, operations and explanations for each offspring")
         children, seen = [], set(existing)
         for text, operation, explanation in zip(expressions, operations, explanations):
             self.record("proposal", parent=parent["expression"], donor=donor["expression"],

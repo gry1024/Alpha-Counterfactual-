@@ -50,7 +50,8 @@ class CounterfactualTests(unittest.TestCase):
 
     def test_future_lookback_and_malformed_expressions_rejected(self):
         for text in ["Ref($close,-1)", "TsMean($close,0)", "TsMean(TsMean($close,200),100)",
-                     "Add($close,$open,$volume)"]:
+                     "Add($close,$open,$volume)", "Add(1.0,2.0)",
+                     "Sub(0.0,Add(1.0,2.0))", "Pow(0.5)", "Ref($close,1.0)"]:
             with self.subTest(text=text), self.assertRaises(ValueError):
                 parse(text, self.args)
 
@@ -58,12 +59,53 @@ class CounterfactualTests(unittest.TestCase):
         seeds = json.loads((Path(__file__).resolve().parents[1] / "start_pool.json").read_text())["exprs"]
         self.assertEqual(len(seeds), 150)
         self.assertEqual(len(set(seeds)), 150)
+        self.args.max_backtrack = 100
         for text in seeds:
             parse(text, self.args)
+            flipped = parse(f"Sub(0.0,{text})", self.args)
+            self.assertEqual(str(parse(str(flipped), self.args)), str(flipped))
         expr = parse("Div(TsMean($close,5),TsMean($close,10))", self.args)
         variants = {str(e) for e in parameter_variants(expr, self.args)}
         self.assertEqual(len(variants), 8)
         self.assertIn("Div(TsMean($close,20),TsMean($close,20))", variants)
+
+    def test_nested_constants_and_direction_limits(self):
+        from alphagen.data.expression import Sub
+        from alphagen.data.tree import ExpressionParser
+        original = parse("Pow(0.5,$close)", self.args)
+        flipped = parse("Sub(0.0,Pow(0.5,$close))", self.args)
+        torch.testing.assert_close(flipped.evaluate(self.data), -original.evaluate(self.data))
+        nested = parse("Add(1.0,Mul(2.0,$close))", self.args)
+        torch.testing.assert_close(nested.evaluate(self.data), 1 + 2 * parse("$close", self.args).evaluate(self.data))
+        # The shared RL builder retains its generation constraints.
+        with self.assertRaises(ValueError):
+            ExpressionParser().parse(str(flipped))
+        self.args.max_nodes, self.args.max_depth = 3, 2
+        parse(str(flipped), self.args)
+        for text in ["Sub(0.0,Abs(Pow(0.5,$close)))", str(Sub(0.0, flipped)),
+                     "Sub(0.0,Ref($close,-1))"]:
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                parse(text, self.args)
+
+    def test_initialize_keeps_negative_constant_first_seed(self):
+        from alpha_cf.trainer import AlphaCFTrainer
+        self.args.rounds, self.args.pool_capacity = 0, 1
+        expr = parse("Pow(0.5,$close)", self.args)
+        original_signal = self.pool.signal(expr).clone()
+        # Alternating signs yield a finite, strictly negative RankICIR.
+        self.pool.target = original_signal * torch.where(
+            torch.arange(80)[:, None] % 4 == 0, 1.0, -1.0)
+        self.pool.cache.clear()
+        self.assertLess(self.pool.evaluate(expr)["reward"], 0)
+        with TemporaryDirectory() as directory:
+            trainer = AlphaCFTrainer(self.pool, self.args, Path(directory))
+            trainer.initialize([str(expr)])
+            self.assertEqual([str(e) for e in self.pool.exprs], ["Sub(0.0,Pow(0.5,$close))"])
+            self.assertGreater(self.pool.evaluate(self.pool.exprs[0])["reward"], 0)
+            rows = [json.loads(line) for line in (Path(directory) / "round_0.jsonl").read_text().splitlines()]
+            self.assertFalse(any(row["event"] == "invalid" for row in rows))
+            saved = json.loads((Path(directory) / "pool_0.json").read_text())["exprs"][0]
+            torch.testing.assert_close(self.pool.signal(parse(saved, self.args)), -original_signal)
 
     def test_chunked_execution_and_pool_credit(self):
         expressions = [parse(text, self.args) for text in
@@ -161,9 +203,44 @@ class CounterfactualTests(unittest.TestCase):
             self.assertNotIn("max_tokens", call)
             self.assertIn("Given parent:", call["messages"][1]["content"])
             self.assertIn("NOT Boolean comparisons", call["messages"][1]["content"])
+            trainer.client.chat.completions.create.return_value = SimpleNamespace(choices=[
+                SimpleNamespace(message=SimpleNamespace(content=json.dumps(dict(
+                    expressions=["$close"] * 3, operations=["mutation"] * 3, explanations=["test"] * 3))),
+                    finish_reason="stop")])
             trainer.ask(PROMPT_EVOLUTION, dict(parent={}, donor={}, historical_memory=[],
                 existing_expressions=[], offspring_count=3, random_crossover=False, limits={}))
             self.assertIn("all three arrays have 3 entries", trainer.client.chat.completions.create.call_args.kwargs["messages"][1]["content"])
+
+    def test_llm_format_retries_are_bounded(self):
+        from alpha_cf.trainer import AlphaCFTrainer
+        from alpha_cf.prompt import PROMPT_DIAGNOSIS, PROMPT_EVOLUTION
+        self.args.rounds, self.args.temperature = 0, 0.5
+        cases = [
+            (PROMPT_DIAGNOSIS, dict(parent="$close", reward=0.1, nodes=[], mechanism_count=3,
+                                   cf_enabled=True), {"mechanisms": []},
+             ["", "  ", '<think>{"mechanisms": []}</think>', "not JSON", "```json\n{bad}\n```",
+              "[]", "{}", '{"mechanisms": null}']),
+            (PROMPT_EVOLUTION, dict(parent={}, donor={}, historical_memory=[], existing_expressions=[],
+                                   offspring_count=1, random_crossover=False, limits={}),
+             dict(expressions=["$close"], operations=["mutation"], explanations=["test"]),
+             ['{"expressions": []}', '{"expressions": [], "operations": [], "explanations": []}'])]
+        with TemporaryDirectory() as directory:
+            trainer = AlphaCFTrainer(self.pool, self.args, Path(directory))
+            trainer.model = Mock()
+            for prompt, context, expected, invalid in cases:
+                for text in invalid:
+                    with self.subTest(prompt=prompt[:30], response=text):
+                        trainer.model.chat_generate = Mock(side_effect=[
+                            (text, "stop"), (text, "stop"), (json.dumps(expected), "stop")])
+                        self.assertEqual(trainer.ask(prompt, context), expected)
+                        self.assertEqual(trainer.model.chat_generate.call_count, 3)
+                        trainer.model.chat_generate = Mock(return_value=(text, "stop"))
+                        with self.assertRaises(ValueError):
+                            trainer.ask(prompt, context)
+                        self.assertEqual(trainer.model.chat_generate.call_count, 3)
+                trainer.model.chat_generate = Mock(return_value=(json.dumps(expected), "stop"))
+                self.assertEqual(trainer.ask(prompt, context), expected)
+                self.assertEqual(trainer.model.chat_generate.call_count, 1)
 
     def test_final_pool_calls_existing_script(self):
         import train_cf

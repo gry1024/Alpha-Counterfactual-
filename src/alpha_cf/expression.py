@@ -5,7 +5,12 @@ from itertools import product
 import re
 
 from alphagen.data import expression as E
-from alphagen.data.tree import ExpressionParser
+from alphagen.data.tree import ExpressionBuilder, ExpressionParser
+
+
+class FormulaBuilder(ExpressionBuilder):
+    # Text formulas may push constants from different nesting levels consecutively.
+    validate_const = ExpressionBuilder.validate_feature
 
 
 def children(expr):
@@ -41,7 +46,10 @@ def replace(expr, path, replacement):
 
 
 def validate(expr, args):
-    nodes = list(walk(expr))
+    # A single outer sign flip does not increase the factor body complexity.
+    body = expr._rhs if (isinstance(expr, E.Sub) and isinstance(expr._lhs, E.Constant)
+                        and expr._lhs._value == 0.0) else expr
+    nodes = list(walk(body))
     if not expr.is_featured or len(nodes) > args.max_nodes or max(len(p) for p, _ in nodes) >= args.max_depth:
         raise ValueError("Expression has no feature or exceeds size/depth limits")
 
@@ -66,7 +74,10 @@ def parse(text, args, featured=True):
         return re.sub(r"-?\d+(?:\.\d*)?[eE][+-]?\d+",
                       lambda m: format(Decimal(m[0]), "f"), source)
     text = canonical(text)
-    expr = ExpressionParser().parse(text)
+    builder = FormulaBuilder()
+    for token in ExpressionParser().tokenize(text):
+        builder.add_token(token)
+    expr = builder.get_tree()
     if canonical(str(expr)) != text:
         raise ValueError("Malformed expression arguments")
     return validate(expr, args) if featured else expr

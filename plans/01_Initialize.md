@@ -22,7 +22,7 @@ for seed in seeds:
     expr = self.evaluate(seed)                  # parse + pool.evaluate
     if expr is None: continue                    # parse / evaluate 失败
     if pool.evaluate(expr)["reward"] < 0:        # 有符号 RankICIR < 0
-        expr = self.evaluate(Sub(0.0, expr))     # 整式取反，记录为新表达式
+        expr = self.evaluate(str(Sub(0.0, expr)))     # 整式取反，记录为新表达式
     candidates.append(expr)
 ```
 
@@ -148,3 +148,7 @@ def train(args):
 ```
 
 `trainer.train` 在第一步就是 `initialize(seeds)`，落选种子不进入任何后续步骤。
+
+### 文本解析与方向包装
+
+AlphaCF 复用基础设施的 tokenizer、ExpressionBuilder 与算子校验，仅通过 FormulaBuilder 允许不同嵌套层的常数连续入栈；不改动 RL 生成器的约束。最外层一层 `Sub(0.0,expr)` 视为方向包装，不计入因子本体的节点数和深度预算，未来引用和回看限制仍检查完整表达式。
