@@ -5,7 +5,6 @@ import gc
 import json
 import os
 from pathlib import Path
-import random
 import sys
 import subprocess
 
@@ -16,10 +15,9 @@ import torch
 from dotenv import load_dotenv
 from alphagen_qlib.stock_data import StockData
 from alpha_cf.alpha_pool import AlphaCFPool
-from alpha_cf.expression import parse
 from alpha_cf.trainer import AlphaCFTrainer, save_json
 
-SPLITS = {"train": ("2011-01-01", "2021-12-31"), "valid": ("2022-01-01", "2022-12-31")}
+SPLITS = {"train": ("2015-01-01", "2021-12-31")}
 
 
 def load_data(args, split):
@@ -49,8 +47,8 @@ def release():
 
 
 def test(args, source):
-    if json.loads(source.read_text()).get("split") != "valid":
-        raise ValueError("Test requires a frozen final.json from Validation")
+    if json.loads(source.read_text()).get("split") != "train":
+        raise ValueError("Test requires a pool_*.json from training")
     root = Path(__file__).resolve().parent
     env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(root / "src"), os.environ.get("PYTHONPATH", "")]))
     subprocess.run([sys.executable, str(root / "run_adaptive_combination.py"),
@@ -65,33 +63,19 @@ def train(args):
     log_dir.mkdir(parents=True)
     save_json(log_dir / "args.json", vars(args))
     print(f"Logs: {log_dir}", flush=True)
-    if args.finalize_only:
-        expressions = [parse(text, args) for text in json.loads(Path(args.finalize_only).read_text())["exprs"]]
-    else:
-        data, target = load_data(args, "train")
-        pool = AlphaCFPool(data, target, args)
-        trainer = AlphaCFTrainer(pool, args, log_dir)
-        seeds = json.loads(Path(args.start_pool).read_text())["exprs"]
-        expressions = trainer.train(seeds)
-        del trainer, pool, data, target
-        release()
-    save_json(log_dir / "search_pool.json", dict(exprs=[str(e) for e in expressions], args=vars(args), split="train"))
-    data, target = load_data(args, "valid")
+    data, target = load_data(args, "train")
     pool = AlphaCFPool(data, target, args)
-    candidates = []
-    for expr in expressions:
-        try:
-            pool.evaluate(expr)
-            candidates.append(expr)
-        except ValueError as exc:
-            print(f"Validation unavailable: {expr}: {exc}", flush=True)
-    pool.exprs = pool.select(candidates, args.final_size)
-    save_json(log_dir / "final.json", dict(**pool.to_dict(), args=vars(args), split="valid"))
+    trainer = AlphaCFTrainer(pool, args, log_dir)
+    seeds = json.loads(Path(args.start_pool).read_text())["exprs"]
+    trainer.train(seeds)
     for i, (expr, metrics) in enumerate(zip(pool.exprs, pool.to_dict()["metrics"])):
-        print(f"> Alpha {i + 1}: RankICIR={metrics['reward']:.4f}, expr={expr}", flush=True)
-    del pool, data, target
+        print(f"> Alpha {i + 1}: RankIC={metrics['reward']:.4f}, expr={expr}", flush=True)
+    pool_path = log_dir / f"pool_{args.rounds}.json"
+    del trainer, data, target
     release()
-    test(args, log_dir / "final.json")
+    del pool
+    release()
+    test(args, pool_path)
 
 
 def main():
@@ -100,39 +84,32 @@ def main():
     parser.add_argument("--qlib-path")
     parser.add_argument("--start-pool", default="start_pool.json")
     parser.add_argument("--test-only", metavar="FINAL_JSON")
-    parser.add_argument("--finalize-only", metavar="TRAIN_POOL_JSON")
-    for name, default in dict(seed=0, cuda=0, rounds=10, parents=20, mechanisms=3, offspring=5,
-                              refine_top_k=5, pool_capacity=60, final_size=30, horizon=20,
+    for name, default in dict(seed=0, cuda=0, rounds=10, parents=10,
+                              pool_capacity=50, horizon=20,
                               max_nodes=60, max_depth=10, max_backtrack=100, chunk_size=64,
                               llm_timeout=180, n_factors=10).items():
         parser.add_argument("--" + name.replace("_", "-"), type=int, default=default, dest=name)
-    for name, default in dict(alpha=1.0, beta=1.0, gamma=0.2, cost_weight=0.1, temperature=0.5).items():
+    for name, default in dict(alpha=0.4, beta=0.3, gamma=0.2, cost_weight=0.1, temperature=0.5, correlation_threshold=0.9).items():
         parser.add_argument("--" + name.replace("_", "-"), type=float, default=default, dest=name)
-    parser.add_argument("--windows", type=int, nargs="+", default=[5, 10, 20, 40, 60])
-    for name in ("no-cf-evidence", "no-pool-credit", "random-crossover", "no-memory", "no-pool-selection", "no-refinement"):
+    for name in ("no-cf-evidence", "no-pool-credit", "no-memory", "no-pool-selection"):
         parser.add_argument("--" + name, action="store_true")
     args = parser.parse_args()
-    if args.test_only and args.finalize_only:
-        parser.error("Use only one replay mode")
-    source = args.test_only or args.finalize_only
+    source = args.test_only
     if source:
         saved = json.loads(Path(source).read_text())
-        if args.finalize_only and saved.get("split") in ("valid", "test"):
-            parser.error("--finalize-only requires a Train pool")
         config = saved.get("args") or json.loads((Path(source).parent / "args.json").read_text())
-        config.update(cuda=args.cuda, test_only=args.test_only, finalize_only=args.finalize_only)
+        config.update(cuda=args.cuda, test_only=args.test_only)
         args = argparse.Namespace(**{k: config.get(k, v) for k, v in vars(args).items()})
-    if min(args.rounds, args.refine_top_k) < 0 or min(args.parents, args.mechanisms, args.offspring,
-            args.pool_capacity, args.final_size, args.horizon, args.chunk_size, args.n_factors) < 1:
+    if args.rounds < 0 or min(args.parents,
+            args.pool_capacity, args.horizon, args.chunk_size, args.n_factors) < 1:
         parser.error("Invalid counts")
-    if args.final_size > args.pool_capacity or min(args.windows) < 2:
-        parser.error("Invalid pool sizes or window grid")
+    if not 0 <= args.correlation_threshold <= 1:
+        parser.error("correlation-threshold must be between 0 and 1")
     load_dotenv(Path(__file__).resolve().parent / ".env")
     args.device = f"cuda:{args.cuda}" if args.cuda >= 0 and torch.cuda.is_available() else "cpu"
     env_key = "QLIB_PATH_SP500" if args.instrument == "sp500" else "QLIB_PATH_CN"
     default = "data/qlib_data/us_data_qlib_latest" if args.instrument == "sp500" else "data/qlib_data/cn_data_rolling"
     args.qlib_path = str(Path(args.qlib_path or os.environ.get(env_key) or default).resolve())
-    random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     if args.rounds and not source and os.environ.get("OPENAI_MODEL_NAME", "").lower() != "minimax-m3":

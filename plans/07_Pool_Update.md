@@ -1,155 +1,51 @@
-# 07 — 工作池更新
+# 07 — 按父因子替换工作池
 
-对应代码：`src/alpha_cf/alpha_pool.py::AlphaCFPool.select / update / keep`、`src/alpha_cf/trainer.py::AlphaCFTrainer.train / save`。
+实现：`AlphaCFPool.initialize/select/replace_parent/keep`、
+`AlphaCFTrainer.train/save`。
 
-每个 round 结束前执行一次 `pool.update(children)`，把池大小从 60 重新选满到 60（候选 = 当前 60 + 本轮 offspring）。
+## 初始化与演化分离
 
----
+仅初始化 `initialize(candidates)` 调贪心 select 选 pool_capacity 个，
+沿用 |R|、组合贡献、多样性和 (1-cost) 四项 min-max 加权，权重 α+β+γ+λ=1。
+默认容量 50，候选不足则报错；`--no-pool-selection` 仅影响初始化，改为按 R 选。
 
-## 7.1 候选集构造
+演化阶段不合并候选，也不再重选固定数量。
+每个 parent 的 offspring 数量由 LLM 根据 mechanism 量级和 factor 复杂度自主决定为 0–5 个，
+只竞争该 parent 的位置。生成 0 个时直接保留 parent，并记录 retained。
 
-```python
-def update(self, offspring):
-    self.exprs = self.select(self.exprs + offspring, args.pool_capacity)  # 60
-    self.keep(self.exprs)
-```
+## 替换条件
 
-`select(candidates, size)`（`alpha_pool.py:81-116`）：
+替换分两种情形：
 
-```python
-def select(self, candidates, size):
-    # 1) 字符串去重
-    remaining = list({str(e): e for e in candidates}.values())
-    # 2) 预 evaluate：把 candidate 都填进 cache（保证后续打分用到 rank/signal）
-    for expr in remaining: self.evaluate(expr)
-    if len(remaining) < size:
-        raise ValueError(f"Need {size} usable unique factors, got {len(remaining)}")
-    # 3) 关闭 pool selection 时直接按 reward 截断
-    if args.no_pool_selection:
-        return sorted(remaining, key=lambda e: self.evaluate(e)["reward"], reverse=True)[:size]
+**情形 1 等价去冗余**：子代 signal_distance（1 - mean Spearman(parent, child)）≤ 1e-6
+且 complexity(child) < complexity(parent)，即排序信号等价且节点更少，直接替换。
+这覆盖删除无意义算子（如 Mul(1.0,f)、Add(0.0,f)）。
 
-    selected, total, utility = [], torch.zeros_like(self.target, dtype=torch.float64), 0.0
-    correlations = {str(e): 0.0 for e in remaining}
-    weights = np.array([args.alpha, args.beta, args.gamma, -args.cost_weight])     # [1.0, 1.0, 0.2, -0.1]
+**情形 2 组合得分提升**：其余子代与 parent 一起计算
+S(f|P) = α·|R| + β·C_pool + γ·D + λ·(1-C_cost)，
+其中 C_pool = U(P_{-f}∪{f}) - U(P)，P_{-f} 取当前池去掉该 parent（与
+[机制证据](03_Mechanism_Credit.md) 中 pool_credit 同一公式，不重复定义）；
+四个分量 |R|、C_pool、D、1-C_cost 均 min-max 归一化到 [0,1]（1=最佳）。
+参与比较的每个候选（含 parent 自身）都在同一个 P_{-f} 上计算。
+仅当子代 S 严格高于 parent S 时替换，且在所有打分更高者中取 S 最高者。
 
-    # 4) 贪心选 size 个
-    while len(selected) < size:
-        # 4a) 算每个候选的"加入后池 utility"
-        utilities = []
-        for start in range(0, len(remaining), 4):           # 一次最多处理 4 个候选，控制显存
-            batch   = remaining[start:start+4]
-            signals = torch.stack([self.signal(e) for e in batch])
-            utilities.extend(self.score_signals((total + signals) / (len(selected)+1)).tolist())
+权重 α+β+γ+λ=1，默认 0.4/0.3/0.2/0.1。
+子代不得与池内公式完全重复；complexity 为 AST 本体节点数，忽略一层最外侧方向包装。
+父因子自身不参与 P，允许等价简化。
 
-        # 4b) 打分四元组：[R(f), U(new_pool)-U(current), 1-max_corr, cost]
-        rows = np.array([
-            [self.evaluate(e)["reward"],
-             u - utility,
-             1 - correlations[str(e)],
-             self.evaluate(e)["cost"]]
-            for e, u in zip(remaining, utilities)
-        ])
-        # 4c) min-max 归一化后线性加权
-        scores = ((rows - rows.min(0)) / np.maximum(np.ptp(rows, axis=0), 1e-12)) @ weights
-        scores[~np.isfinite(utilities)] = -np.inf                          # 不可用候选被屏蔽
-        if not np.isfinite(scores).any():
-            raise ValueError("No valid pool extension")
-        index   = int(scores.argmax())
-        winner, utility = remaining.pop(index), utilities[index]
-        selected.append(winner)
-        total   += self.signal(winner)                                     # double 累加
+没有满足任一情形的子代就保留 parent；替换原槽位，不改动其他成员。
+池大小始终不变，一轮最多替换 parent 数量个成员。
 
-        # 4d) 更新"已选 vs 候选"的最大相关性（多样性）
-        for start in range(0, len(remaining), 4):
-            batch   = remaining[start:start+4]
-            signals = torch.stack([self.evaluate(e)["signal"] for e in batch])
-            rhs     = self.evaluate(winner)["signal"].expand_as(signals)
-            corr    = spearman(signals.flatten(0,1), rhs.flatten(0,1)).reshape(signals.shape[:2]).abs().nanmean(1)
-            for expr, value in zip(batch, corr.tolist()):
-                correlations[str(expr)] = max(
-                    correlations[str(expr)],
-                    value if np.isfinite(value) else 1.0
-                )
-    return selected
-```
+## 日志与产物
 
----
+每个 parent 写 replacement 事件及 lineage，包含候选的 reward、complexity、
+max_correlation、eligible、description，以及最终 replaced/retained 结果。
+入池子代另保存 child_description，保留时为 null；描述只用于解释和追溯，不参与数值筛选。
+全无有效子代时仍记录 retained，继续训练，不因空轮报错。
+每个 parent 处理完 `keep(pool.exprs)` 释放未入池信号。
+每轮保存 pool、memory、lineage；路径 ID 规则见 [机制记忆](04_Mechanism_Memory.md)。
 
-## 7.2 Selection formula 对照 idea.md
-
-idea.md §"Factor Selection"：
-$$
-S(f \mid P) = \alpha R(f) + \beta r_{\text{pool}}(f \mid P) + \gamma D(f, P) - \lambda C_{\text{cost}}(f)
-$$
-
-程序实现：
-
-| 项 | idea 符号 | 程序字段 | 计算 |
-|---|---|---|---|
-| 单因子质量 | $R(f)$ | `rows[:, 0]` | `evaluate(e)["reward"]`（有符号 RankICIR） |
-| 边际 pool utility | $r_{\text{pool}}(f\mid P)$ | `rows[:, 1]` | `u - utility` = 加入后的 RankICIR − 当前 |
-| 多样性 | $D(f,P)$ | `rows[:, 2]` | `1 - correlations[str(e)]`，其中 `correlations[str(e)] = max_{g∈selected} mean_t |Spearman(f_t, g_t)|` |
-| Turnover 成本 | $C_{\text{cost}}(f)$ | `rows[:, 3]` | `(1 - mean_t Spearman(f_t, f_{t-1}))/2` ∈ [0, 1] |
-
-权重默认值：`alpha=1.0, beta=1.0, gamma=0.2, cost_weight=0.1`。归一化：候选集内 min-max 到 [0, 1]；极差 ≤ 1e-12 时分母取 1e-12 防止除零。
-
-打分后取 `scores.argmax()`，对应 winner 加入池；`correlations` 只升不降（保证多样性单调惩罚最相似的）。
-
----
-
-## 7.3 缓存与数值一致性
-
-- `self.signal(e)` 返回 double 精度的 rank-normalized 张量；`total` 是 double 累加，防止 60 个成员相加的精度漂移
-- `pool.score_signals` 对 `[B, T, n_stocks]` 张量返回 `[B]` 的 RankICIR；`unsqueeze(0)` 把它转成单元素 batch
-- `update()` 结束后调用 `keep()`：`self.cache = {k: v for k, v in self.cache.items() if k in {str(e) for e in self.exprs}}`，把池外成员的 signal 张量全部释放
-- `signal/evaluate` 全部走 `torch.no_grad()`（`evaluate` 装饰器）——只前向不反向
-
----
-
-## 7.4 Selection 的开关与边界
-
-- `--no-pool-selection`：跳过四元打分，按 reward 降序截断到 60。便于消融"pool-aware 选择是否有用"
-- `--alpha / --beta / --gamma / --cost-weight`：四元组线性权重；归一化后乘加
-- 候选不足 60 个 → 抛错（候选太少应当反思 offspring generation）
-- 所有候选 utility 都是 nan → 抛错（信号整体退化）
-- `len(selected) == 60` 时停止，不会自动从外部补候选
-
----
-
-## 7.5 持久化
-
-每轮结束后 `trainer.save()`：
-
-```python
-def save(self):
-    save_json(log_dir / f"pool_{self.step}.json", pool.to_dict())
-    save_json(log_dir / "memory.json", self.memory)
-    print(f"Pool {self.step}: size={len(pool.exprs)}, RankICIR={pool.utility():.4f}")
-```
-
-`pool.to_dict()`：
-```python
-{
-  "exprs":   [str(e) for e in self.exprs],               # 60 个表达式
-  "weights": [1/K] * K,                                  # 等权
-  "metrics": [{"reward", "ic", "cost"} for e in self.exprs],
-  "utility": self.utility()                              # 当前池 U
-}
-```
-
-`round_<step>.jsonl::update` 行：
-```json
-{"event":"update", "offspring": <int>, "added": [str, ...], "utility": <float>}
-```
-
-`added` 字段记录本轮真正进入池的子代字符串列表，便于事后追溯每一轮的进化痕迹。
-
----
-
-## 7.6 不做的事情（与方案 1 的区别）
-
-- **不**用多轮"refill"机制：候选集**严格**是当前池 + 本轮 offspring，不存在"老候选"或"外部记忆"回流
-- **不**先按阈值淘汰候选——所有 candidate 都参与打分
-- **不**维护多目标 Pareto front——线性加权归一化是最简形式
-- **不**提前预计算所有 utility 矩阵——`while` 循环每轮重新算 `u - utility`
-- **不**保留历史候选池——`keep()` 严格释放
+最终 `pool_<rounds>.json` 即最终池，split=train。
+`train_cf.py` 释放训练资源后调用原 `run_adaptive_combination.py` 复跑最终回测；
+Validation/Test 切分由原脚本内部按 `--train_end_year 2021` 处理，AlphaCF 不再单独维护 valid。
+`--test-only` 仍可用保存池复跑最终回测。

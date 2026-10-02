@@ -19,7 +19,7 @@ class AlphaKnowledgePool(AlphaPool):
             ic_mut_threshold: float = 0.9,
             top_k : int = 15,
             depth_decay: float = 0.05, 
-            embedding_model_name: str = "Qwen/Qwen3-Embedding-4B",
+            embedding_model_name: str = "Qwen/Qwen3-Embedding-0.6B",
             use_res_correlation: bool = True,
             use_semantic_similarity: bool = True,
             use_edit_distance: bool = False,

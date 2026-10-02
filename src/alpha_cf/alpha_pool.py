@@ -1,8 +1,9 @@
-"""Signed RankICIR and greedy pool selection from idea.md."""
+"""Signed RankIC, initial pool selection and per-parent replacement."""
 from copy import copy
 import numpy as np
 import torch
 from alphagen.utils.correlation import batch_pearsonr
+from .expression import complexity
 
 
 def rank(x):
@@ -27,11 +28,19 @@ def spearman(x, y):
     return batch_pearsonr(x, y).clamp(-1, 1).masked_fill(~valid, torch.nan)
 
 
-def icir(ic):
-    count = ic.isfinite().sum(-1)
-    mean = ic.nan_to_num().sum(-1) / count.clamp_min(1)
-    var = (ic - mean.unsqueeze(-1)).square().nan_to_num().sum(-1) / count.clamp_min(1)
-    return (mean / (var.sqrt() + 1e-8)).masked_fill(count < 2, torch.nan)
+def _minmax_scores(rows):
+    # rows: N x K raw values where larger is better; normalize each column to [0, 1].
+    a = np.array(rows, dtype=float)
+    for j in range(a.shape[1]):
+        col = a[:, j]
+        finite = col[np.isfinite(col)]
+        if finite.size == 0:
+            a[:, j] = 0.0
+            continue
+        col = np.where(np.isfinite(col), col, finite.min())
+        span = col.max() - col.min()
+        a[:, j] = (col - col.min()) / span if span > 1e-12 else 0.0
+    return a
 
 
 class AlphaCFPool:
@@ -53,7 +62,7 @@ class AlphaCFPool:
             count = value.isfinite().sum(1, keepdim=True)
             signal = (rank(value) / (count - 1).clamp_min(1) - 0.5).masked_fill(count < 2, torch.nan)
             daily = spearman(signal, self.target)
-            reward = icir(daily).item()
+            reward = daily.nanmean().item()
             cost = (1 - spearman(signal[1:], signal[:-1]).nanmean().item()) / 2
             if not np.isfinite([reward, cost]).all():
                 raise ValueError("Factor has no usable cross-sectional variation")
@@ -68,7 +77,7 @@ class AlphaCFPool:
         shape = signals.shape
         target = self.target.expand_as(signals).flatten(0, 1)
         daily = spearman(signals.flatten(0, 1), target).reshape(shape[:2])
-        return icir(daily)
+        return daily.nanmean(1)
 
     def utility(self, exprs=None):
         exprs = self.exprs if exprs is None else exprs
@@ -85,20 +94,21 @@ class AlphaCFPool:
         if len(remaining) < size:
             raise ValueError(f"Need {size} usable unique factors, got {len(remaining)}")
         if self.args.no_pool_selection:
-            return sorted(remaining, key=lambda e: self.evaluate(e)["reward"], reverse=True)[:size]
+            return sorted(remaining, key=lambda e: abs(self.evaluate(e)["reward"]), reverse=True)[:size]
         selected, total, utility = [], torch.zeros_like(self.target, dtype=torch.float64), 0.0
         correlations = {str(e): 0.0 for e in remaining}
-        weights = np.array([self.args.alpha, self.args.beta, self.args.gamma, -self.args.cost_weight])
+        weights = np.array([self.args.alpha, self.args.beta, self.args.gamma, self.args.cost_weight])
         while len(selected) < size:
             utilities = []
             for start in range(0, len(remaining), 4):
                 batch = remaining[start:start + 4]
                 signals = torch.stack([self.signal(e) for e in batch])
                 utilities.extend(self.score_signals((total + signals) / (len(selected) + 1)).tolist())
-            rows = np.array([[self.evaluate(e)["reward"], u - utility,
-                              1 - correlations[str(e)], self.evaluate(e)["cost"]]
-                             for e, u in zip(remaining, utilities)])
-            scores = ((rows - rows.min(0)) / np.maximum(np.ptp(rows, axis=0), 1e-12)) @ weights
+            # Columns: |R|, C_pool = U(P∪{e})-U(P), D, 1-C_cost (all larger-is-better).
+            rows = [[abs(self.evaluate(e)["reward"]), u - utility,
+                     1 - correlations[str(e)], 1 - self.evaluate(e)["cost"]]
+                    for e, u in zip(remaining, utilities)]
+            scores = _minmax_scores(rows) @ weights
             scores[~np.isfinite(utilities)] = -np.inf
             if not np.isfinite(scores).any():
                 raise ValueError("No valid pool extension")
@@ -115,9 +125,79 @@ class AlphaCFPool:
                     correlations[str(expr)] = max(correlations[str(expr)], value if np.isfinite(value) else 1.0)
         return selected
 
-    def update(self, offspring):
-        self.exprs = self.select(self.exprs + offspring, self.args.pool_capacity)
+    def initialize(self, candidates):
+        self.exprs = self.select(candidates, self.args.pool_capacity)
         self.keep(self.exprs)
+
+    def correlation(self, left, right, absolute=False):
+        daily = spearman(self.evaluate(left)["signal"], self.evaluate(right)["signal"])
+        return (daily.abs() if absolute else daily).nanmean().item()
+
+    def replace_parent(self, parent, offspring):
+        index = next(i for i, e in enumerate(self.exprs) if str(e) == str(parent))
+        peers = self.exprs[:index] + self.exprs[index + 1:]
+        existing = {str(e) for e in self.exprs}
+        parent_nodes = complexity(parent)
+        pool_utility = self.utility(self.exprs)
+
+        children = [c for c in {str(c): c for c in offspring}.values() if str(c) not in existing]
+        for child in children:
+            self.evaluate(child)
+
+        # Diversity and C_pool are always measured against the peers (the pool excluding
+        # this parent), so S(f|P) never contains f itself.
+        def diversity(expr):
+            if not peers:
+                return 1.0
+            corr = max((c if np.isfinite(c) else 1.0
+                        for c in (self.correlation(expr, peer, absolute=True) for peer in peers)),
+                       default=0.0)
+            return 1.0 - corr
+
+        def c_pool(expr):
+            # C_pool = U(P_{-f} ∪ {e}) - U(P); larger means the swap improves the pool.
+            value = self.utility(peers + [expr]) - pool_utility
+            return value if np.isfinite(value) else 0.0
+
+        distance = {}
+        for child in children:
+            corr = self.correlation(parent, child)
+            distance[str(child)] = 1.0 - corr if np.isfinite(corr) else None
+
+        # Case 1: an equivalent child (signal_distance ~ 0) with fewer nodes wins directly.
+        equivalent = [child for child in children
+                      if distance[str(child)] is not None and distance[str(child)] <= 1e-6
+                      and complexity(child) < parent_nodes]
+        equivalent.sort(key=complexity)
+
+        weights = np.array([self.args.alpha, self.args.beta, self.args.gamma, self.args.cost_weight])
+        members = [parent] + children
+        rows = [[abs(self.evaluate(e)["reward"]), c_pool(e), diversity(e),
+                 1 - self.evaluate(e)["cost"]]
+                for e in members]
+        scores = _minmax_scores(rows) @ weights
+        parent_score = scores[0]
+
+        candidates, winner = [], None
+        if equivalent:
+            winner = equivalent[0]
+        elif children:
+            # Case 2: highest-scoring child strictly above the parent replaces it.
+            best = int(np.argmax(scores[1:])) + 1
+            if scores[best] > parent_score:
+                winner = members[best]
+
+        for child, score in zip(children, scores[1:]):
+            candidates.append(dict(expression=str(child), reward=self.evaluate(child)["reward"],
+                                   complexity=complexity(child), max_correlation=1.0 - diversity(child),
+                                   signal_distance=distance[str(child)], score=float(score),
+                                   eligible=child in equivalent or float(score) > float(parent_score)))
+        if winner is not None:
+            self.exprs[index] = winner
+        return dict(parent=str(parent), parent_reward=self.evaluate(parent)["reward"],
+                    parent_complexity=parent_nodes,
+                    child=str(winner) if winner is not None else None,
+                    outcome="replaced" if winner is not None else "retained", candidates=candidates)
 
     def keep(self, exprs):
         keys = {str(e) for e in exprs}

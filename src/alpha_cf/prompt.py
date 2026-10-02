@@ -29,104 +29,89 @@ Keep log inputs positive and denominators meaningful. Constants are not standalo
 Nested windows consume cumulative history; respect the supplied expression limits.
 Example: Div(Sub($close,$open),Add(Sub($high,$low),0.000001)).
 
-Evaluation: R is SIGNED daily cross-sectional RankICIR; larger is better.
-U is RankICIR of an equal-weight combination of rank-normalized factors.
-delta_cf=R(ablated)-R(parent): negative means removal hurt the individual factor.
-pool_credit=U(pool)-U(pool with parent replaced): positive means removal hurt the pool.
-Near-zero effects are weak evidence. Conflicting signs reveal individual/pool tradeoffs.
+Evaluation: R is SIGNED daily cross-sectional RankIC; individual quality is |R|, larger absolute
+value is better. Sign is a property of the data, not the factor: keep the natural sign produced
+by the operators and do not add a Sub(0.0, ...) wrapper to flip a factor unless the rewritten
+expression would be genuinely negative on Train.
+U is signed RankIC of an equal-weight combination of rank-normalized factors; positive and
+negative factors coexist in the pool, so combination naturally hedges.
+delta_cf=|R(counterfactual)|-|R(parent)|: negative means the edit hurt the individual factor.
+pool_credit=U(pool)-U(pool with parent replaced): positive means the edit hurt the pool.
+signal_distance=1-mean_daily_Spearman(parent,counterfactual), without absolute value.
+Near zero suggests equivalent rankings, including redundant Mul(1.0,f), not proof of
+identical syntax or future equivalence. Consider this together with reward and complexity. Conflicting signs reveal individual/pool tradeoffs.
 A null score means unmeasured, not zero. Credits are conditional on the exact parent,
 intervention and pool; they are not guarantees for transferred or modified mechanisms.
 """
 
 PROMPT_DIAGNOSIS = """
-Your task is to identify the useful structural units in this factor and propose independent
-counterfactual ablations. The program will measure them; do not predict numerical credit.
+Understand this factor and propose informative counterfactual edits. The program measures
+the evidence; do not invent numerical scores or prescribe decisions for evolution.
 
-1. Read the whole formula and its economic hypothesis. Identify up to {mechanism_count}
-   coherent mechanisms: an interaction, a return signal, a volume transformation,
-   smoothing, normalization, or another substantive unit supported by the actual formula.
-   Do not fill the count with scalar leaves, sign scaffolding, epsilon guards or
-   algebraically invariant edits such as removing centering inside a correlation.
-2. Copy each mechanism's path from the supplied AST. Root is []; unary/rolling input is
-   child 0; binary/pair-rolling inputs are children 0 and 1. Windows are not children.
-   A mechanism can be nested or the whole factor. Avoid redundant overlapping diagnoses.
-   Do not select root [] or a bare leaf (a path that resolves to a constant like 0.0 or 1.0);
-   the ablated result must still vary across stocks.
-3. Propose one baseline at that path. "remove" keeps an exact proper descendant of the
-   selected subtree. "neutralize" replaces the effect with an interpretable baseline:
-   e.g. 0.0 for an additive contribution, 1.0 for a multiplicative contribution.
-   Do not add new input features or replace the mechanism with a new alpha hypothesis.
-4. Read the resulting WHOLE expression: it must still vary across stocks. For a root
-   transform, keeping one of its inputs is often more informative than a constant.
-   Each ablation starts from the original parent; other paths stay unchanged. Explain
-   which behavior is removed and which is retained, including limitations of the comparison.
-5. If no defensible nonconstant intervention exists, keep the mechanism with null mode
-   and replacement. If cf_enabled is false, return semantic decomposition only, with
-   all modes and replacements null. Check paths and syntax before returning the JSON.
-
-Worked example (format and local editing, not a required factor):
-Parent: Mul(Sub(Div(Ref($close,5),$close),1.0),Div($volume,TsMean($volume,20)))
-{{"mechanisms":[{{"path":[1],"description":"Abnormal-volume scaling of a reversal signal",
-"mode":"neutralize","replacement":"1.0",
-"reason":"Remove volume-dependent amplification while retaining the five-day reversal."}}]}}
-This changes only the right multiplicative input. The reversal is still a complete signal.
+Choose the number of mechanisms based on factor complexity, at most 5; do not pad the list.
+An edit may remove a redundant operator, change a window, replace a subtree, introduce
+another feature, or rewrite the economic hypothesis. Any edit useful for understanding
+the factor is welcome. Explain what hypothesis the comparison tests in free text.
+Copy a path from the supplied AST: root [], unary/rolling input [0], binary inputs [0]/[1].
+To change a window, replace its rolling subtree with the revised expression.
+For a whole-factor rewrite, use root []. Each edit starts from the original parent.
+Only the selected subtree is replaced; the resulting whole factor must remain executable,
+nonconstant and within the expression limits. An unchanged formula is not an intervention.
+You may probe algebraic redundancy: for Mul(1.0,$close), path [] and replacement "$close"
+test whether the multiplication contributes anything. Do not exclude such edits.
+If no useful edit exists, return an empty mechanisms list. When measurement is disabled,
+still propose edits, but no evidence will be measured. Check syntax and paths yourself.
 
 Given parent: {parent}
-Parent R: {reward}
-Available subtrees: {nodes}
-cf_enabled: {cf_enabled}
-Return only {{"mechanisms":[{{"path":[],"description":"...","mode":"remove|neutralize|null",
-"replacement":"exact baseline expression or null","reason":"brief intervention rationale"}}]}}.
-Use actual JSON null where appropriate, not the string "null".
+Signed RankIC: {reward}
+AST: {nodes}
+Measurement enabled: {cf_enabled}
+Expression limits: {limits}
+
+Return only {{"mechanisms":[{{"path":[],"description":"...","replacement":"...",
+"reason":"What this edit tests and why it helps understand the factor"}}]}}.
 """
 
 PROMPT_EVOLUTION = """
-Your task is to generate {offspring_count} new factors from the parent, donor and their
-counterfactual evidence. The purpose is to improve signed predictive quality and pool
-complementarity through structural changes. You propose hypotheses; market data decides.
+Choose how many complete new child factors to generate, from 0 to 5, based on the
+number and scope of this parent's mechanisms and the factor's complexity. Do not pad
+proposals to reach a quota. If no worthwhile improvement is justified, return an empty
+offspring list; the parent will be retained.
+Use its measured mechanisms and historical evidence to form novel, effective hypotheses
+and remove redundancy. You decide how to improve the factor; there are no required
+operation categories, allocations, or rules forcing any mechanism to be retained.
+You may rewrite a whole economic hypothesis, simplify an equivalent representation,
+alter windows, or compose useful structures.
+Use delta_cf, pool_credit and signal_distance together. Near-zero signal_distance can
+justify eliminating redundant structure. Conflicting evidence is a tradeoff to reason
+about, not a predetermined decision. Unmeasured evidence is not zero.
 
-Hard syntax rules (verify before returning JSON): Sub(x,y) requires y as a NUMERIC scalar
-(0.0, 1.0, 0.000001), never another expression; every '(' needs its matching ')'; the
-result must contain at least one of $open/$high/$low/$close/$vwap/$volume (no bare
-constants); keep cumulative window+lookback within {limits}.
+Each child is backtested on Train. Replacement follows two rules. (1) A child whose
+signal_distance to its parent is near zero (equivalent rankings, e.g. deleting a redundant
+Mul(1.0, f) or Add(0.0, f)) replaces the parent directly if it has strictly fewer AST nodes.
+(2) Otherwise the parent and its children are ranked by a normalized composite score
+S = weighted sum over |R|, C_pool, diversity and turnover cost, each
+normalized to [0,1] (1 being best). A child replaces the parent only if its score is
+strictly higher; the highest-scoring child wins. Complexity counts AST nodes, excluding a
+single outer sign wrapper. Aim for diverse, economically meaningful improvements and remove
+redundancy when the ranking is equivalent. Do not wrap a child in Sub(0.0, ...) just to
+flip a sign that came out negative on Train.
 
-1. Read each parent mechanism with its baseline, delta_cf and pool_credit. Preserve useful
-   behavior, simplify unsupported components and redesign harmful ones. If the signs
-   conflict, explain the individual/pool tradeoff. With no measurements, state a hypothesis
-   rather than claiming empirical support. Historical memory is evidence, not a recipe.
-2. Use varied modification strategies across this batch, without forcing weak proposals:
-   - mutation: keep a meaningful mechanism intact and redesign the surrounding structure;
-   - replacement: replace one complete diagnosed mechanism with an economically motivated
-     alternative, keeping the rest of that parent unchanged;
-   - crossover: compose intact mechanisms from BOTH the current parent and supplied donor.
-   If they are the same factor, do not claim crossover. In random-crossover mode, the donor
-   is assigned randomly; use that donor rather than selecting another from memory.
-3. Go beyond window changes, scalar tuning, sign flips and rank-equivalent wrappers.
-   Try genuinely different representations of the hypothesis: interaction versus additive
-   confirmation, price versus return behavior, conditional amplification versus risk
-   normalization. A simpler formula may be a better hypothesis than a more complex one.
-   These are examples, not a menu of required operators. Avoid arbitrary operator novelty.
-4. Propose distinct full expressions with concrete default parameters. Prefer at most two
-   different tunable windows; a one-day return lag may remain fixed. The program refines
-   windows later. Do not copy a full parent, donor, existing pool factor or earlier child.
-   Do not regenerate old complete factors merely because they appear in memory.
-5. For each child give one concise explanation naming the retained/changed mechanisms,
-   the supplied evidence motivating the change and the expected behavior to test. Do not
-   claim higher measured R, lower correlation or profitability before evaluation.
-6. Before responding, correct operator names, arity, scalar/window types, paths used in
-   your own proposal, numerical domains and expression limits. Return only the corrected
-   expressions, with matching operations and explanations in the same order.
+For each child, return its executable final expression and a brief description (1-2
+sentences): identify the mechanism evidence that motivated it (delta_cf, pool_credit
+and/or signal_distance), and state what you changed or explored and why. Reference
+actual supplied evidence; if it is absent, say this is an exploratory hypothesis.
+Do not invent measurements or prescribe an operation category. Check syntax,
+dimensional meaning, denominators and expression
+limits. Avoid exact duplicates of the current pool or previously generated children.
+Existing measured evidence need not transfer unchanged to a new context, so all children
+will be evaluated.
 
-Given parent and its evidence: {parent}
-Given donor and its evidence: {donor}
-Historical measured mechanisms: {historical_memory}
-Existing pool and earlier children: {existing_expressions}
-random_crossover: {random_crossover}
+Parent and evidence: {parent}
+This factor's own past measured mechanisms: {historical_memory}
+Existing expressions: {existing_expressions}
 Expression limits: {limits}
 
-Output format (all three arrays have {offspring_count} entries):
-{{"expressions":["complete executable expression"],
-"operations":["mutation|replacement|crossover"],
-"explanations":["brief structural hypothesis grounded in the supplied evidence"]}}
-Return one JSON object, without Markdown or any other text.
+Return only {{"offspring":[{{"expression":"...","description":"Brief evidence and modification/exploration rationale"}}]}}
+with 0 to 5 entries, or {{"offspring":[]}}. Both fields are required nonempty strings.
 """

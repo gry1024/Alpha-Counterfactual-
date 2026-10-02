@@ -5,14 +5,14 @@
 - 算子层 `src/alphagen/data/expression.py::ExpressionParser` 与 `Expression.evaluate`
 - 候选层 `src/alpha_cf/expression.py::parse(text, args)`
 - 评价层 `src/alpha_cf/alpha_pool.py::AlphaCFPool`
-- 选择层 `src/alpha_cf/alpha_pool.py::AlphaCFPool.select` / `update` / `keep`
+- 选择层 `src/alpha_cf/alpha_pool.py::AlphaCFPool.select` / `initialize` / `keep`
 - 训练入口 `src/alpha_cf/trainer.py::AlphaCFTrainer.initialize` / `train`
 
 ---
 
-## 1.1 候选种子与方向学习
+## 1.1 候选种子与评估
 
-输入 `--start-pool`，默认 `start_pool.json`。`exprs` 直接保存 150 个候选表达式，依次为 Alpha158 精选 30 个、AlphaSAGE 50 个、AlphaPROBE 50 个、AlphaGen 20 个。Alpha158 按结构类别和时间尺度覆盖选取；另外三组原样导入指定历史池。来源和 Alpha158 名单见 README，方向学习仍只在 Train 上进行。
+输入 `--start-pool`，默认 `start_pool.json`。`exprs` 直接保存 150 个候选表达式，依次为 Alpha158 精选 30 个、AlphaSAGE 50 个、AlphaPROBE 50 个、AlphaGen 20 个。Alpha158 按结构类别和时间尺度覆盖选取；另外三组原样导入指定历史池。来源和 Alpha158 名单见 README。
 
 逐个种子执行：
 
@@ -21,15 +21,13 @@
 for seed in seeds:
     expr = self.evaluate(seed)                  # parse + pool.evaluate
     if expr is None: continue                    # parse / evaluate 失败
-    if pool.evaluate(expr)["reward"] < 0:        # 有符号 RankICIR < 0
-        expr = self.evaluate(str(Sub(0.0, expr)))     # 整式取反，记录为新表达式
     candidates.append(expr)
 ```
 
 要点：
-- 方向学习只发生在 Train（split 由 `train_cf.load_data` 用 `SPLITS["train"]` 决定）。
-- 反转后必须重新 `evaluate`，若仍 `< 0` 则保留 `Sub` 后的版本（不再二次反转）。
-- 落选的种子不进入 `pool.exprs`，且不再作为后续步骤的候选——`Select_60` 是严格从这 150 个里挑 60 个。
+- 仅在 Train 上 evaluate（split 由 `train_cf.load_data` 用 `SPLITS["train"]` 决定）。
+- 不在初始化阶段做符号翻转：`Sub(0.0, f)` 视为结构外层包装，由 LLM 在 evolve 阶段根据机制证据自主决定是否添加，**不由初始化强制翻转**。
+- 落选的种子不进入 `pool.exprs`，且不再作为后续步骤的候选——`Select_50` 是严格从这 150 个里挑 50 个。
 
 ---
 
@@ -46,7 +44,7 @@ def evaluate(self, expr):
         values = []
         for start in range(0, len(self.target), args.chunk_size):   # 默认 chunk_size=64
             block = copy(self.data)
-            block.data = self.data.data[start: start + max_backtrack + min(start+chunk, len(target))]
+            block.data = self.data.data[start: max_backtrack + min(start+chunk, len(target))]
             v = expr.evaluate(block)                                # 输出 [block_len, n_stocks]
             values.append(v.masked_fill(~v.isfinite(), nan))
         value = torch.cat(values)
@@ -55,9 +53,9 @@ def evaluate(self, expr):
         count = value.isfinite().sum(1, keepdim=True)
         signal = (rank(value) / (count-1).clamp_min(1) - 0.5).masked_fill(count < 2, nan)
 
-        # 3. 单因子 reward：signed RankICIR
+        # 3. 单因子 reward：signed RankIC
         daily  = spearman(signal, self.target)                       # [T]
-        reward = icir(daily).item()                                  # mean(daily)/(std(daily)+1e-8)
+        reward = daily.nanmean().item()                              # mean(daily_rank_ic)
 
         # 4. turnover proxy：C_cost = (1 - mean_t Spearman(signal_t, signal_{t-1})) / 2
         cost = (1 - spearman(signal[1:], signal[:-1]).nanmean().item()) / 2
@@ -70,24 +68,24 @@ def evaluate(self, expr):
 ```
 
 关键公式对应 idea.md：
-- `R(f) = Mean(IC_t) / (Std(IC_t) + ε)`，其中 `IC_t = Spearman(signal_t, ret_{t→t+h})`，`ε=1e-8`
+- `R(f) = Mean(RankIC_t)`，其中 `RankIC_t = Spearman(signal_t, ret_{t→t+h})`
 - `signal_t` 为横截面 `rank/(N-1) - 0.5`，所以 `E[signal_t]=0`，可以正负衡量。
 
 实现细节：
 - `rank()` 用 `torch.sort + 起始/结束位置 cummax/cummin` 做平均 tied ranks，跳过 nan
-- `icir()` 在样本 < 2 时返回 nan，trainer 层会把 nan 视为不可用
+- `daily.nanmean()` 在样本全 nan 时返回 nan，trainer 层会把 nan 视为不可用
 - 缓存 key 是 `str(expr)` 字符串，避免同一表达式重复 evaluate
 
 ---
 
 ## 1.3 构造工作池
 
-`AlphaCFPool.update(offspring)` 即 `self.exprs = self.select(self.exprs + offspring, args.pool_capacity)`：
-- `pool_capacity=60`：每个 round 后池大小固定 60
-- `select()` 走 idea.md §"Factor Selection" 的四分量打分（详见 `07_Pool_Update.md`）
+`AlphaCFPool.initialize(candidates)` 即 `self.exprs = self.select(candidates, args.pool_capacity)`：
+- `pool_capacity=50`：每个 round 后池大小固定 50
+- `select()` 走 idea.md §"Factor Selection" 的四分量打分（只用于初始化；演化替换见 `07_Pool_Update.md`）
 - `keep()` 把 cache 限制在当前 exprs 上，释放掉被淘汰的 signal 张量
 
-落选 seed 不保留——`pool.exprs` 始终是当前 60 个的精确集合；后续 diagnose/evolve 只访问这 60 个。
+落选 seed 不保留——`pool.exprs` 始终是当前 50 个的精确集合；后续 diagnose/evolve 只访问这 50 个。
 
 ---
 
@@ -110,9 +108,8 @@ target = target.masked_fill(~target.isfinite() | close_nonpos, nan)
 ```
 
 切分：
-- `D_train = 2011-01-01 ~ 2021-12-31`
-- `D_valid = 2022-01-01 ~ 2022-12-31`
-- `D_test  = 2023-01-01 ~ 2026-04-30`（`run_adaptive_combination.py` 内 hard-coded）
+- `D_train = 2011-01-01 ~ 2021-12-31`（AlphaCF 仅接触此段）
+- `D_test  = 2023-01-01 ~ 2026-04-30`（`run_adaptive_combination.py` 内 hard-coded，AlphaCF 不单独维护 valid）
 - `data.df_bak = None` 后不再做 dataframe 回退，仅用 numpy 缓存
 
 ---
@@ -145,6 +142,9 @@ def train(args):
     trainer = AlphaCFTrainer(pool, args, log_dir)
     seeds   = json.loads(Path(args.start_pool).read_text())["exprs"]   # 150
     trainer.train(seeds)                              # 走 initialize + 10 rounds
+    pool_path = log_dir / f"pool_{args.rounds}.json"
+    release()                                         # 释放训练资源
+    test(args, pool_path)                              # spawn run_adaptive_combination.py
 ```
 
 `trainer.train` 在第一步就是 `initialize(seeds)`，落选种子不进入任何后续步骤。

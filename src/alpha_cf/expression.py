@@ -1,7 +1,6 @@
 """Small AST helpers; execution and parsing belong to alphagen."""
 from copy import deepcopy
 from decimal import Decimal
-from itertools import product
 import re
 
 from alphagen.data import expression as E
@@ -45,11 +44,19 @@ def replace(expr, path, replacement):
     return result
 
 
-def validate(expr, args):
+def body_nodes(expr):
     # A single outer sign flip does not increase the factor body complexity.
     body = expr._rhs if (isinstance(expr, E.Sub) and isinstance(expr._lhs, E.Constant)
                         and expr._lhs._value == 0.0) else expr
-    nodes = list(walk(body))
+    return list(walk(body))
+
+
+def complexity(expr):
+    return len(body_nodes(expr))
+
+
+def validate(expr, args):
+    nodes = body_nodes(expr)
     if not expr.is_featured or len(nodes) > args.max_nodes or max(len(p) for p, _ in nodes) >= args.max_depth:
         raise ValueError("Expression has no feature or exceeds size/depth limits")
 
@@ -85,34 +92,9 @@ def parse(text, args, featured=True):
 
 def ablate(expr, mechanism, args):
     path = mechanism["path"]
-    node = at(expr, path)
+    at(expr, path)
     baseline = parse(mechanism["replacement"], args, featured=False)
-    if mechanism["mode"] == "remove":
-        if str(baseline) not in {str(n) for p, n in walk(node) if p}:
-            raise ValueError("Remove must retain a descendant of the mechanism")
-    elif mechanism["mode"] == "neutralize":
-        inputs = {str(n) for _, n in walk(node) if isinstance(n, E.Feature)}
-        if any(str(n) not in inputs for _, n in walk(baseline) if isinstance(n, E.Feature)):
-            raise ValueError("Neutralization introduces a new input")
-    else:
-        raise ValueError("Expected remove or neutralize")
     result = validate(replace(expr, path, baseline), args)
     if str(result) == str(expr):
         raise ValueError("Unchanged intervention")
     return result
-
-
-def parameter_variants(expr, args):
-    # Tune up to two distinct windows jointly wherever repeated; enumerate their full grid.
-    windows = sorted({n._delta_time for _, n in walk(expr) if hasattr(n, "_delta_time") and n._delta_time > 1})[:2]
-    for values in product(*(sorted(set([w, *args.windows])) for w in windows)):
-        variant = deepcopy(expr)
-        mapping = dict(zip(windows, values))
-        for _, node in walk(variant):
-            if hasattr(node, "_delta_time") and node._delta_time in mapping:
-                node._delta_time = mapping[node._delta_time]
-        if str(variant) != str(expr):
-            try:
-                yield validate(variant, args)
-            except ValueError:
-                continue

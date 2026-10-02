@@ -98,7 +98,7 @@ if __name__ == '__main__':
     parser.add_argument('--generate_num', type=int, default=5)
     parser.add_argument('--top_k', type=int, default= 15)
     parser.add_argument("--depth_decay", type=float, default=0.05)
-    parser.add_argument("--embedding_model_name", type=str, default='Qwen/Qwen3-Embedding-4B')
+    parser.add_argument("--embedding_model_name", type=str, default='Qwen/Qwen3-Embedding-0.6B')
     parser.add_argument("--use_res_correlation", type=bool, default=True)
     parser.add_argument("--use_semantic_similarity", type=bool, default=True)
     parser.add_argument("--use_edit_distance", type=bool, default=False)

@@ -546,16 +546,23 @@ class AlphaKnowledgeTrainer:
             except (json.JSONDecodeError, AssertionError) as exc:
                 print(f"Failed to parse JSON response or invalid number of expressions/explanations: {exc}")
                 pattern = re.compile(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```|\{([\s\S]*?)\}',re.MULTILINE)
+                candidate = None
                 for match in pattern.finditer(res):
                     candidate = match.group(1) or f'{{{match.group(2)}}}'
+                    break
+                if candidate is None:
+                    print(f"No JSON object found in response")
+                    continue
                 try:
                     json_res = json.loads(candidate)
-                except (json.JSONDecodeError, AssertionError) as exc:
-                    print(f"Failed to candidate {candidate}: {exc}")
+                    assert len(json_res["expressions_fixed"]) == args.generate_num
+                    assert len(json_res["explanations"]) == args.generate_num
+                except (json.JSONDecodeError, KeyError, AssertionError) as exc:
+                    print(f"Failed to parse candidate {candidate}: {exc}")
                     continue
             parent_ic, parent_icir, parent_mut = self.pool.get_ic_icir_mutics(expr=parent_expr)
             for i in range(args.generate_num):
-                raw_expr = json_res["expressions"][i]
+                raw_expr = json_res["expressions_fixed"][i]
                 explanation = json_res["explanations"][i]
                 if self.graph.search(raw_expr.strip()) is not None:
                     node = self.graph.search(raw_expr.strip())

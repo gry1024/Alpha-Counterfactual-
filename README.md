@@ -3,10 +3,10 @@
 按 [idea.md](idea.md) 实现反事实机制演化，沿用 `alpha_knowledge` 的 pool / trainer / 入口组织。表达式、解析器、Qlib 数据和基础统计复用仓库现有实现。
 
 ```text
-150 个种子 → Train 选 60 个
-每轮：选择 parent → 机制消融 → 双重 credit → 机制记忆
-     → mutation / replacement / crossover → 窗口枚举 → 重选 60 个
-最后：Validation 选 30 个 → 冻结公式 → 调用原 run_adaptive_combination.py
+150 个种子 → Train 选 50 个
+每轮：选 10 个 parent → 自由反事实编辑 → 三项机制证据 → 机制记忆
+     → 每个 parent 自主生成 0–5 个子代 → 合格最优子代原位替换 parent
+最后：最后一轮 pool → 直接调用原 run_adaptive_combination.py
 ```
 
 ## 运行
@@ -22,13 +22,10 @@ python train_cf.py --instrument csi300 --cuda 0 --rounds 10
 | 参数 | 默认 | 含义 |
 |---|---:|---|
 | `--rounds` | 10 | 演化轮数；0 只初始化并做最终评价 |
-| `--parents` | 20 | 每轮父本数，一半优先少访问，一半优先高 R |
-| `--mechanisms` | 3 | 单个父本最多诊断的机制数 |
-| `--offspring` | 5 | **每个父本**请求的子代数，默认约 100 个/轮 |
-| `--refine-top-k` | 5 | 做参数枚举的优质子代数 |
-| `--windows` | 5 10 20 40 60 | 最多两个不同窗口值的完整网格，包含原值 |
-| `--pool-capacity / --final-size` | 60 / 30 | 工作池 / 最终池 |
-| `--alpha / --beta / --gamma / --cost-weight` | 1 / 1 / 0.2 / 0.1 | 质量、组合边际、多样性、换手 proxy 权重 |
+| `--parents` | 10 | 每轮 5 个 top-k + 5 个低访问，互不重复 |
+| `--correlation-threshold` | 0.9 | 子代与其余池成员最大日均绝对 Spearman 相关性上限 |
+| `--pool-capacity` | 50 | 工作池（=最终池） |
+| `--alpha / --beta / --gamma / --cost-weight` | 1 / 1 / 0.2 / 0.1 | 仅初始化使用的质量、组合边际、多样性、换手 proxy 权重 |
 | `--horizon` | 20 | 收益标签跨度 |
 | `--max-backtrack / --max-nodes / --max-depth` | 100 / 60 / 10 | 表达式合法性限制 |
 | `--chunk-size` | 64 | 按日期分块执行表达式 |
@@ -46,25 +43,27 @@ Alpha158 按结构类别和时间尺度精选，覆盖 K 线形态、相对价�
 - AlphaPROBE：`data/knowledge_logs/pool_50/kg_dag_and_bayesian_icir_and_mutl_new_no_decay_MiniMax-M3_5_csi300_0.5_7_50_0.9_50_20_0.006_True_True_False_True_0.7_0.1_0.05/pool_20.json`
 - AlphaGen：`data/ppo_logs/pool_20/ppo_csi300_20_0-20260905132532/ppo_csi300_20_0_20260905132532/200704_steps_pool.json`
 
-种子方向仅在 Train 上确定：负 RankICIR 的公式显式写成 `Sub(0.0,expr)`，然后统一选择。后续 offspring、消融、Validation、Test 均按原有符号打分，不取绝对 R，也不自动翻转。种子库是待检验的候选结构，不代表每个公式都有效。
+种子方向仅在 Train 上确定：负 RankIC 的公式显式写成 `Sub(0.0,expr)`，然后统一选择。后续 offspring、消融、Validation、Test 均按原有符号打分，不取绝对 R，也不自动翻转。种子库是待检验的候选结构，不代表每个公式都有效。
 
 | 分区 | 日期 | 用途 |
 |---|---|---|
-| Train | 2011–2021 | 搜索、消融、参数枚举、池更新 |
-| Validation | 2022 | 最终 60→30，不能生成新公式 |
-| Test | 2023–2026.04 | 冻结后的最终评价 |
+| Train | 2011–2021 | 搜索、消融、池更新；最后一轮即为最终池 |
+| Validation | 2022 | 由原回测脚本使用，AlphaCF 不再触碰 |
+| Test | 2023–2026.04 | 由原回测脚本使用 |
 
-Train / Validation 各自剔除末尾 horizon 个交易日的跨段标签，允许读取此前历史，禁止未来引用。最终回测直接使用原脚本的数据加载、标签与组合口径。默认回看改为 100 日，与原脚本的 StockData 默认值一致。
+Train 段剔除末尾 horizon 个交易日的跨段标签，允许读取此前历史，禁止未来引用。最终回测直接使用原脚本的数据加载、标签与组合口径。默认回看改为 100 日，与原脚本的 StockData 默认值一致。
 
 ## 指标与演化
 
-- `R = mean(RankIC) / (std(RankIC) + 1e-8)`，有符号、总体标准差、不年化。
-- 每个因子用平均并列秩映射到 [-0.5,0.5]，缺失取中性 0，固定等权组合再算 `U = RankICIR`。组合用双精度累加，避免增量替换改变并列排名。
-- `delta_cf = R(ablation) - R(parent)`；`pool_credit = U(pool) - U(replace(parent,ablation))`。
-- `S = alpha*R + beta*marginal_U + gamma*(1-max_correlation) - cost_weight*turnover`。四项在候选集中 min-max 归一化，贪心选择。
-- AST 消融只改指定路径：remove 保留其已有后代，neutralize 不引入新输入。机制建议和实测证据分开，只有测量成功的干预进入 memory。Action 只是提示，双重原始数值始终提供。
-- 默认每个 parent 都发起一次演化请求，模型输出完整公式；程序做解析、合法性检查、数值评价和精确公式去重。不再用多层结构过滤决定什么算有效演化。
-- 每个父本配一个其他 donor，默认按机制证据选；全部历史 memory 传入请求。没有复杂 trace、coverage 门槛或错误分类框架。
+- `R = mean(RankIC)`，有符号、不年化。
+- 每个因子用平均并列秩映射到 [-0.5,0.5]，缺失取中性 0，固定等权组合再算 `U = RankIC`。组合用双精度累加，避免增量替换改变并列排名。
+- `delta_cf = |R(counterfactual)| - |R(parent)|`；`pool_credit = C_pool = U(P\{parent} ∪ {counterfactual}) - U(pool)`（越大表示组合效用提升越多）；`signal_distance = 1 - mean_daily_Spearman(parent,counterfactual)`，不取绝对值，接近 0 提示排序等价。
+- `S = alpha*|R| + beta*C_pool + gamma*(1-max_correlation) + cost_weight*(1-turnover)`，四项 min-max 归一化到 [0,1] 后加权，`alpha+beta+gamma+cost_weight=1`（默认 0.4/0.3/0.2/0.1）。初始化贪心选择与父因子替换共用同一打分。
+- 子代替换父因子分两种情形：signal_distance ≈ 0（排序等价）且 AST 节点数更少，直接替换；否则按 `S` 打分，得分严格高于 parent 的子代中取最高者替换。
+- LLM 根据因子复杂度自主提 0–5 个有意义的反事实编辑，没有机制数量参数。可删冗余算子、改窗口或经济重写，包括根路径整式替换；只记录实测证据，不给预设处置建议。
+- LLM 根据 mechanism 数量、规模和 factor 复杂度，为每个 parent 自主生成 0–5 个完整公式；不设固定数量参数，允许空列表并保留父因子。程序解析、检查、评价和精确去重。historical memory 只包含该 parent 自身的过往记录，不跨因子；不限定操作类型或保留结构。
+- 候选与 parent 的 `C_pool`、`D` 均在 `P\{parent}` 上计算，不包含被替换成员自身；最多一个子代替换该 parent，没有合适子代就保留。单层最外部符号包装不计复杂度。
+- 同轮先诊断再逐 parent 生成和替换，池大小不变；每个成员有唯一 factor ID，演化路径记入 lineage.json。
 
 算子本身使用 `alphagen` 原实现；组合评分的 rank 使用平均并列秩。`Greater/Less` 规范化为同义的 `GetGreater/GetLess`，科学计数法转换后交给现有 parser。
 
@@ -72,36 +71,35 @@ Train / Validation 各自剔除末尾 horizon 个交易日的跨段标签，允�
 
 沿用 `src/utils/prompt.py` 的角色提示、特征/算子定义、任务模板和结构化输出方式。角色直接复用 `PROMPT_HEAD`；算子表按当前 `alphagen` 实现校正，避免复用范例中的 TsRatio、Greater/Less、TsMad 等不一致描述。
 
-诊断提示包含金融语义、AST 路径约定、Remove / Neutralize 对照、完整可执行示例和自检要求。演化提示区分 mutation / replacement / crossover，要求解释实际证据、保留与改写的机制，并看到当前池及本轮已生成公式以避免重复。返回 `expressions`、`operations`、`explanations` 三个等长数组；只输出自检后的公式，不重复输出草稿和修正版。
+诊断输出 `mechanisms`，每项为 `path/description/replacement/reason`；给出有意义的反事实编辑，由程序计算三项证据。演化返回 `{"offspring":[{"expression":"完整公式","description":"简短的证据与修改说明"}]}`，数量由 LLM 自定为 0–5 个，允许 `{"offspring":[]}`。每个子代必须附 1–2 句描述，说明依据哪些 mechanism 证据、做了什么修改或探索；无实测证据时明确说明是探索假设，不编造数值。不规定操作类型。提示中提供当前池及本轮已生成公式、父因子机制证据和实际替换标准。
 
 网络调用统一复用 `OpenAIModel.chat_generate`，不另造会话重试框架。日志保存格式化后的完整输入、原始响应与 finish_reason。
 
 ## 最终回测
 
-入口保存 `final.json` 后，通过 `subprocess.run(..., check=True)` 直接执行仓库根目录的 `run_adaptive_combination.py`。不再维护 AlphaCF 自己的 evaluator、OLS 或回测指标副本。
+最后一轮（`--rounds`）结束时 `pool_<rounds>.json` 即为最终产物，通过 `subprocess.run(..., check=True)` 直接执行仓库根目录的 `run_adaptive_combination.py`。不再维护 AlphaCF 自己的 evaluator、OLS 或回测指标副本。
 
-向原脚本传入 `--expressions_file`、`--instruments`、`--train_end_year 2021`、`--label_days`、`--cuda`、`--seed`、`--n_factors` 和 `--chunk_size`。使用同一 Python 解释器，并传递 src 的 PYTHONPATH。原脚本打印 Validation / Test 指标，保存 `ret_s.npy`；其默认数据目录与算法均保持原样。`--qlib-path` 配置 AlphaCF 的搜索/验证数据，最终回测的数据目录由原脚本决定。
+向原脚本传入 `--expressions_file`、`--instruments`、`--train_end_year 2021`、`--label_days`、`--cuda`、`--seed`、`--n_factors` 和 `--chunk_size`。使用同一 Python 解释器，并传递 src 的 PYTHONPATH。原脚本打印 Validation / Test 指标，保存 `ret_s.npy`；其默认数据目录与算法均保持原样。`--qlib-path` 配置 AlphaCF 的搜索数据，最终回测的数据目录由原脚本决定。
 
 ```bash
-python train_cf.py --test-only data/cf_logs/<run>/final.json --cuda 0
-python train_cf.py --finalize-only data/cf_logs/<run>/search_pool.json --cuda 0
+python train_cf.py --test-only data/cf_logs/<run>/pool_<rounds>.json --cuda 0
 ```
 
-第二条只从 Train 快照执行 Validation 和 Test，不恢复演化；也可读取同目录带 `args.json` 的 `pool_<轮次>.json`。保存配置优先，设备使用当前命令。
+跳过 Train，直接对已有 `pool_<rounds>.json` 复跑回测，便于多次运行验证测试稳定性。
 
 ## 日志与消融
 
 每次运行单独保存到 `data/cf_logs/<时间戳>_<instrument>_<seed>/`：
 
 - `args.json`：参数。
-- `round_<轮次>.jsonl`：逐条追加模型输入输出、机制测量、候选评分、参数枚举及池更新。
-- `pool_<轮次>.json` / `search_pool.json`：工作池及最终 Train 池。
+- `round_<轮次>.jsonl`：逐条追加模型输入输出、机制测量、候选评分、每个子代的简短描述及池更新。
+- `pool_<轮次>.json`：每轮池；最后一轮即最终池。
 - `memory.json`：所有实测机制证据。
-- `final.json`：Validation 冻结公式、等权及指标。
+- `lineage.json`：初始成员与跨轮 parent→child 路径，含保留结果、候选判定及 description、入池子代的 child_description；池快照带 factor_ids 和 visits。
 - `ret_s.npy`：由原回测脚本保存；Validation / Test 指标直接打印。
 
-日志不含密钥。模型返回无法解析的 JSON、输出数组不匹配或整轮没有可用子代会报错，已完成的池快照保留，不把空转称作完成。
+日志不含密钥。模型返回无法解析的 JSON 或子代超过 5 个、字段类型不符或缺少非空表达式/描述会报错；没有可用或合格子代时保留父因子并记录结果，继续训练。
 
-消融开关：`--no-cf-evidence`（保留语义分解）、`--no-pool-credit`、`--random-crossover`（随机 donor）、`--no-memory`、`--no-pool-selection`（仅按 R）、`--no-refinement`。
+消融开关：`--no-cf-evidence`（保留语义分解）、`--no-pool-credit`、`--random-crossover`（随机可选 donor）、`--no-memory`、`--no-pool-selection`（仅初始化按 R）。
 
 开发说明见 [plans/](plans/README.md)。数值测试：`python -m unittest discover -s tests -v`。GP/AlphaGen/AlphaSAGE 对照仍使用原有入口，比较时需统一数据协议。上游说明见 [Quickstart.md](Quickstart.md)，许可见 [LICENSE](LICENSE)。
