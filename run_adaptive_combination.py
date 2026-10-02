@@ -243,18 +243,23 @@ def chunk_batch_spearmanr(x, y, chunk_size=100):
     spearmanr_list = torch.cat(spearmanr_list, dim=0)
     return spearmanr_list
 
-def get_tensor_metrics(x, y, risk_free_rate=0.0):
+def get_tensor_metrics(x, y, y_ret, risk_free_rate=0.0):
     # Ensure tensors are 2D (days, stocks)
     if x.dim() > 2: x = x.squeeze(-1)
     if y.dim() > 2: y = y.squeeze(-1)
+    if y_ret.dim() > 2: y_ret = y_ret.squeeze(-1)
 
+    # IC / RIC use the N-day forward return target (long-horizon prediction quality).
     ic_s = batch_pearsonr(x, y)
     ric_s = chunk_batch_spearmanr(x, y, chunk_size=args.chunk_size)
-    ret_s = batch_ret(x, y)
+
+    # RET / Sharpe / MDD use the 1-day forward return target (true daily PnL semantics,
+    # matching AlphaPROBE's official run_adaptive_combination.py).
+    ret_s = batch_ret(x, y_ret)
 
     ic_s = torch.nan_to_num(ic_s, nan=0.)
     ric_s = torch.nan_to_num(ric_s, nan=0.)
-    ret_s = torch.nan_to_num(ret_s, nan=0.) / args.label_days
+    ret_s = torch.nan_to_num(ret_s, nan=0.)
     ic_s_mean = ic_s.mean().item()
     ic_s_std = ic_s.std().item() if ic_s.std().item() > 1e-6 else 1.0
     ric_s_mean = ric_s.mean().item()
@@ -262,10 +267,8 @@ def get_tensor_metrics(x, y, risk_free_rate=0.0):
     ret_s_mean = (ret_s).mean().item()
     ret_s_std = (ret_s).std().item() if (ret_s).std().item() > 1e-6 else 1.0
 
-    # ret_s = N-day forward return / N, so E[X]=μ but std(X)=σ/√N.
-    # batch_sharpe_ratio annualizes with √252; divide by √N to recover daily SR.
-    # MDD uses the full series: cumsum(X) reconstructs the daily equity curve.
-    ret_sharpe = batch_sharpe_ratio(ret_s, risk_free_rate).item() / (args.label_days ** 0.5)
+    # ret_s is already the daily portfolio return (1-day forward), so no further rescaling.
+    ret_sharpe = batch_sharpe_ratio(ret_s, risk_free_rate).item()
     ret_mdd = batch_max_drawdown(ret_s).item()
     result = dict(
         ic=ic_s_mean,
@@ -309,7 +312,11 @@ def run(args):
     QLIB_PATH = "data/qlib_data/us_data_qlib_latest" if args.instruments == 'sp500' else "data/qlib_data/cn_data_rolling"
     # 1. Define Target and Load Data
     close = Feature(FeatureType.CLOSE)
+    # 20-day forward return: long-horizon target used for IC / RIC and OLS regression.
     target = Ref(close, -args.label_days) / close - 1
+    # 1-day forward return: used only for the final Return / Sharpe / MDD evaluation,
+    # matching AlphaPROBE's official run_adaptive_combination.py semantics.
+    return_target = Ref(close, -1) / close - 1
 
     train_end_time = f'{args.train_end_year}-12-31'
     valid_start_time = f'{args.train_end_year + 1}-01-01'
@@ -353,7 +360,8 @@ def run(args):
         weights = _dev(torch.tensor(weights))
         fct_tensor = fct_tensor @ weights
         tgt_tensor = exprs2tensor([target], data_test, normalize=False)
-        test_results, ret_s = get_tensor_metrics(_dev(fct_tensor), _dev(tgt_tensor))
+        ret_tgt_tensor = exprs2tensor([return_target], data_test, normalize=False)
+        test_results, ret_s = get_tensor_metrics(_dev(fct_tensor), _dev(tgt_tensor), _dev(ret_tgt_tensor))
         ret_s = ret_s.cpu().numpy()
         save_path = os.path.join(os.path.dirname(args.expressions_file), 'ret_s.npy')
         np.save(save_path, ret_s)
@@ -378,6 +386,8 @@ def run(args):
     else:
         fct_tensor = exprs2tensor(expressions, data_all, normalize=True)
         tgt_tensor = exprs2tensor([target], data_all, normalize=False)
+        # 1-day return target aligned to the same data_all window/date axis as tgt_tensor.
+        ret_tgt_tensor = exprs2tensor([return_target], data_all, normalize=False)
 
         # 3. Pre-calculate daily metrics for all factors
         ic_list, ric_list, ret_list = [], [], []
@@ -492,14 +502,14 @@ def run(args):
         if valid_m.any():
             vi = torch.as_tensor(np.flatnonzero(valid_m), device=tgt_tensor.device)
             valid_results, _ = get_tensor_metrics(
-                _dev(all_pred[v_on]), _dev(tgt_tensor[vi, :, 0])
+                _dev(all_pred[v_on]), _dev(tgt_tensor[vi, :, 0]), _dev(ret_tgt_tensor[vi, :, 0])
             )
             rows.append(valid_results)
             names.append("Validation")
         if test_m.any():
             ti = torch.as_tensor(np.flatnonzero(test_m), device=tgt_tensor.device)
             test_results, ret_s = get_tensor_metrics(
-                _dev(all_pred[t_on]), _dev(tgt_tensor[ti, :, 0])
+                _dev(all_pred[t_on]), _dev(tgt_tensor[ti, :, 0]), _dev(ret_tgt_tensor[ti, :, 0])
             )
             rows.append(test_results)
             names.append("Test")
