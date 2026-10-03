@@ -20,9 +20,7 @@ signal_distance 使用有符号相关性，不取绝对值，范围 [0,2]。
 给 LLM 提供去冗余证据。距离接近 0 不证明 AST 相同：
 正比例缩放、严格单调变换也可能有相同排序。
 
-pool credit 使用双精度 rank 信号增量替换：
-`signal=(total-signal(f)+signal(f'))/len(pool)`。
-缺失曝光取中性 0，固定等权，与现有 U 一致。
+pool credit 使用 in-sample OLS 回归组合 utility 计算：直接调用 `pool.utility(peers + [f'])`（与 train 阶段 `U(P)` 的计算方式一致），缺失曝光取中性 0，OLS 在 `T*S` 个样本上单次最小二乘拟合，与 `run_adaptive_combination.py` 同一形式。
 
 不根据两项 credit 的符号生成处置分类，LLM 自主理解收益、冗余和组合之间的权衡。
 `--no-pool-credit` 仅使 pool_credit=null，仍测量其余两项；

@@ -28,19 +28,41 @@ def spearman(x, y):
     return batch_pearsonr(x, y).clamp(-1, 1).masked_fill(~valid, torch.nan)
 
 
-def _minmax_scores(rows):
-    # rows: N x K raw values where larger is better; normalize each column to [0, 1].
-    a = np.array(rows, dtype=float)
-    for j in range(a.shape[1]):
-        col = a[:, j]
-        finite = col[np.isfinite(col)]
-        if finite.size == 0:
-            a[:, j] = 0.0
-            continue
-        col = np.where(np.isfinite(col), col, finite.min())
-        span = col.max() - col.min()
-        a[:, j] = (col - col.min()) / span if span > 1e-12 else 0.0
-    return a
+def _ols_weighted_signal(signals, target, nan_to_num=0.0):
+    """Compute the in-sample OLS-weighted signal matching `run_adaptive_combination.py`.
+
+    Args:
+        signals: [N, T, S] per-factor cross-sectional signals.
+        target:  [T, S] forward returns (same shape as one signal).
+        nan_to_num: fill NaN with this value before regression (matches test side).
+
+    Returns:
+        Tensor [T, S] the OLS-weighted combined signal. Falls back to equal-weight
+        mean if regression fails or the factor set is degenerate.
+    """
+    n = signals.shape[0]
+    if n == 0:
+        return None
+    t, s = target.shape
+    if n == 1:
+        return signals[0]
+    # Reshape to [T*S, N] samples x factors, matching test-side convention.
+    x = signals.permute(1, 2, 0).reshape(-1, n)
+    y = target.reshape(-1)
+    valid_mask = torch.isfinite(y) & torch.isfinite(x).all(dim=1)
+    if valid_mask.sum() < n + 1:
+        return signals.mean(0)
+    x_v = x[valid_mask]
+    y_v = y[valid_mask].unsqueeze(1)
+    try:
+        coef = torch.linalg.lstsq(x_v, y_v, rcond=1e-15).solution  # [N, 1]
+        # Drop intercept-like behaviour: clip non-negative weights (factors are
+        # already normalised; OLS can produce arbitrary signs). Keep signs.
+        coef = coef.squeeze(1)
+        weighted = (signals * coef.view(n, 1, 1)).sum(0)
+        return torch.nan_to_num(weighted, nan=nan_to_num)
+    except Exception:
+        return signals.mean(0)
 
 
 class AlphaCFPool:
@@ -83,8 +105,11 @@ class AlphaCFPool:
         exprs = self.exprs if exprs is None else exprs
         if not exprs:
             return 0.0
-        signal = sum(self.signal(expr) for expr in exprs) / len(exprs)
-        return self.score_signals(signal.unsqueeze(0))[0].item()
+        signals = torch.stack([self.signal(expr) for expr in exprs])  # [N, T, S]
+        combined = _ols_weighted_signal(signals, self.target)
+        if combined is None:
+            return 0.0
+        return self.score_signals(combined.unsqueeze(0))[0].item()
 
     @torch.no_grad()
     def select(self, candidates, size):
@@ -95,27 +120,34 @@ class AlphaCFPool:
             raise ValueError(f"Need {size} usable unique factors, got {len(remaining)}")
         if self.args.no_pool_selection:
             return sorted(remaining, key=lambda e: abs(self.evaluate(e)["reward"]), reverse=True)[:size]
-        selected, total, utility = [], torch.zeros_like(self.target, dtype=torch.float64), 0.0
-        correlations = {str(e): 0.0 for e in remaining}
+        selected, correlations = [], {str(e): 0.0 for e in remaining}
         weights = np.array([self.args.alpha, self.args.beta, self.args.gamma, self.args.cost_weight])
         while len(selected) < size:
             utilities = []
             for start in range(0, len(remaining), 4):
                 batch = remaining[start:start + 4]
-                signals = torch.stack([self.signal(e) for e in batch])
-                utilities.extend(self.score_signals((total + signals) / (len(selected) + 1)).tolist())
+                candidate_signals = torch.stack([self.signal(e) for e in batch])
+                # OLS-weighted utility on (selected + candidate). Falls back to mean
+                # if lstsq fails; matches run_adaptive_combination semantics.
+                if selected:
+                    pool_signals = torch.stack([self.signal(e) for e in selected])
+                    stacked = torch.cat([pool_signals, candidate_signals], dim=0)
+                else:
+                    stacked = candidate_signals
+                combined = _ols_weighted_signal(stacked, self.target)
+                utilities.extend(self.score_signals(combined.unsqueeze(0)).tolist())
+            pool_utility = self.utility(selected) if selected else 0.0
             # Columns: |R|, C_pool = U(P∪{e})-U(P), D, 1-C_cost (all larger-is-better).
-            rows = [[abs(self.evaluate(e)["reward"]), u - utility,
+            rows = [[abs(self.evaluate(e)["reward"]), u - pool_utility,
                      1 - correlations[str(e)], 1 - self.evaluate(e)["cost"]]
                     for e, u in zip(remaining, utilities)]
-            scores = _minmax_scores(rows) @ weights
+            scores = np.array(rows) @ weights
             scores[~np.isfinite(utilities)] = -np.inf
             if not np.isfinite(scores).any():
                 raise ValueError("No valid pool extension")
             index = int(scores.argmax())
-            winner, utility = remaining.pop(index), utilities[index]
+            winner = remaining.pop(index)
             selected.append(winner)
-            total += self.signal(winner)
             for start in range(0, len(remaining), 4):
                 batch = remaining[start:start + 4]
                 signals = torch.stack([self.evaluate(e)["signal"] for e in batch])
@@ -172,10 +204,12 @@ class AlphaCFPool:
 
         weights = np.array([self.args.alpha, self.args.beta, self.args.gamma, self.args.cost_weight])
         members = [parent] + children
+        # Natural-scale weighted score (no minmax); weights are chosen so a
+        # "typical" factor contributes ~1.0 from each axis.
         rows = [[abs(self.evaluate(e)["reward"]), c_pool(e), diversity(e),
                  1 - self.evaluate(e)["cost"]]
                 for e in members]
-        scores = _minmax_scores(rows) @ weights
+        scores = np.array(rows) @ weights
         parent_score = scores[0]
 
         candidates, winner = [], None
@@ -204,6 +238,22 @@ class AlphaCFPool:
         self.cache = {k: v for k, v in self.cache.items() if k in keys}
 
     def to_dict(self):
-        return dict(exprs=[str(e) for e in self.exprs], weights=[1 / len(self.exprs)] * len(self.exprs),
+        # Store actual OLS weights from the same regression the pool utility uses,
+        # so the saved JSON reflects the in-sample combination that produced U(P).
+        n = len(self.exprs)
+        if n == 0:
+            weights = []
+        else:
+            signals = torch.stack([self.signal(e) for e in self.exprs])  # [N, T, S]
+            x = signals.permute(1, 2, 0).reshape(-1, n)
+            y = self.target.reshape(-1)
+            valid_mask = torch.isfinite(y) & torch.isfinite(x).all(dim=1)
+            try:
+                coef = torch.linalg.lstsq(x[valid_mask], y[valid_mask].unsqueeze(1),
+                                          rcond=1e-15).solution.squeeze(1).tolist()
+            except Exception:
+                coef = [1.0 / n] * n
+            weights = [float(c) for c in coef]
+        return dict(exprs=[str(e) for e in self.exprs], weights=weights,
                     metrics=[{k: v for k, v in self.evaluate(e).items() if k != "signal"} for e in self.exprs],
                     utility=self.utility())

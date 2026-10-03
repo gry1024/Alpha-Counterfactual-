@@ -189,15 +189,15 @@ $$
 P=\{f_1,f_2,\ldots,f_K\}
 $$
 
-对归一化后的各因子信号构造等权组合：
+组合信号通过对各因子的归一化信号做 in-sample OLS 回归得到（与 `run_adaptive_combination.py` 同一形式）。把每个因子在交易日 $t$ 的截面信号 $\tilde f_{i,t}$ 与目标 $r_{t\to t+h}$ 一起视作回归样本，求最小二乘权重 $\mathbf{w}\in\mathbb{R}^K$，组合信号即为
 
 $$
 F_{P,t}
 =
-\frac{1}{K}
-\sum_{i=1}^{K}
-\tilde f_{i,t}
+\sum_{i=1}^{K} w_i\,\tilde f_{i,t}
 $$
+
+OLS 在 $(T\cdot S)$ 个样本上单次拟合，权重包含正负号（不做非负截断），与 `run_adaptive_combination.py` 的逐日滚动回归保持同一形式。
 
 定义：
 
@@ -234,27 +234,39 @@ $C_{\mathrm{pool}}>0$ 表示用 $e$ 替换 $f$ 后组合效用提升，$C_{\math
 
 ## Factor Selection
 
-Pool selection 统一考虑单因子质量、组合贡献、多样性和 turnover cost。每一项先归一化到 $[0,1]$（1 表示最好），再做加权和：
+Pool selection 统一考虑单因子质量、组合贡献、多样性和 turnover cost。各项**不做 min-max 归一化**，按其自然尺度直接做加权和；权重从最近一次完整 run 的实测分布推出，使各项在"中等表现"时贡献同量级：
 
 $$
 S(f\mid P)
 =
-\alpha\,\hat R(f)
+\alpha\,|R(f)|
 +
-\beta\,\hat C_{\mathrm{pool}}(f\mid P)
+\beta\,C_{\mathrm{pool}}(f\mid P)
 +
-\gamma\,\hat D(f,P)
+\gamma\,D(f,P)
 +
-\lambda\,\hat T(f)
+\lambda\,\bigl(1-C_{\mathrm{cost}}(f)\bigr)
 $$
 
-其中 $\hat R,\hat C_{\mathrm{pool}},\hat D,\hat T$ 分别是 $|R(f)|$、上文定义的 $C_{\mathrm{pool}}$、$D(f,P)$、$1-C_{\mathrm{cost}}(f)$ 在当前候选集内经 min-max 归一化到 $[0,1]$ 后的取值（1 表示最佳；候选内无差异的项贡献 0）。$C_{\mathrm{pool}}$ 越大表示组合效用提升越多，直接以正号计入。四个超参数满足：
+四项均越大越好：
+
+- $|R(f)|$：单因子有符号日均 RankIC 的绝对值，典型值 ~0.04。
+- $C_{\mathrm{pool}}(f\mid P)$：替换后的 OLS 组合效用变化，典型值 ~0.002，可正可负。
+- $D(f,P)$：与当前池的最大 |Spearman| 相关性之补，典型值 ~0.3。
+- $1-C_{\mathrm{cost}}(f)$：相邻日信号排序稳定性，典型值 ~0.98（取值过于集中，几乎不区分因子，**实际默认权重为 0**）。
+
+默认取
 
 $$
-\alpha+\beta+\gamma+\lambda=1
+\alpha=25,\quad
+\beta=500,\quad
+\gamma=3,\quad
+\lambda=0
 $$
 
-默认取 $\alpha=0.4,\ \beta=0.3,\ \gamma=0.2,\ \lambda=0.1$。多样性定义为：
+使各项"中等表现"时贡献约为 1.0。超参数不再要求和为 1；其语义是"每个维度上每单位的物理贡献"。
+
+多样性定义为：
 
 $$
 \rho(f,g)
@@ -304,16 +316,7 @@ P_0
 \operatorname{Select}_{50}(\mathcal C_0)
 $$
 
-初始化是**唯一**采用贪心 pool-aware selection 的环节，默认权重为：
-
-$$
-\alpha=1,\quad
-\beta=1,\quad
-\gamma=0.2,\quad
-\lambda=0.1
-$$
-
-之后整个 evolutionary process 始终维护：
+初始化是**唯一**采用贪心 pool-aware selection 的环节，使用与父因子替换同一组 $(\alpha,\beta,\gamma,\lambda)$。之后整个 evolutionary process 始终维护：
 
 $$
 |P_t|=50
@@ -331,7 +334,7 @@ $$
 E_t\subset P_t,\qquad |E_t|=10
 $$
 
-其中 5 个按 $R$ 取 top，其余 5 个取访问次数最少者（访问数相同时优先 $R$ 较高者）；每个 parent 每被选中一次，访问数加一。
+直接对当前池做**无放回均匀随机抽样**，不依赖 RankIC 或访问次数；每个 parent 每被选中一次，访问数加一（用于诊断与去重，不参与选择）。
 
 对于每个 $f\in E_t$，LLM 依据因子复杂度自主决定分解出多少个有意义的 mechanism：
 

@@ -14,19 +14,20 @@ idea、plans 与 `src/alpha_cf/` 使用同一协议：
 | 参数 | 默认 | 说明 |
 |---|---:|---|
 | --rounds | 10 | 演化轮数 |
-| --parents | 10 | 默认 5 top-k + 5 低访问，互不重复 |
+| --parents | 10 | 默认 10 个 parent，从当前池做无放回均匀随机抽样 |
 | --correlation-threshold | 0.9 | 保留参数；替换判定已由 S 的多样性项取代硬门槛 |
 | --pool-capacity | 50 | 工作池容量，演化中保持不变 |
 | --horizon | 20 | 前向收益跨度 |
 | --max-nodes / --max-depth / --max-backtrack | 60 / 10 / 100 | 表达式执行边界 |
 | --chunk-size | 64 | 评价分块天数 |
-| --alpha / --beta / --gamma / --cost-weight | 0.4 / 0.3 / 0.2 / 0.1 | S 得分权重，四项归一化到 [0,1] 且总和为 1 |
+| --alpha / --beta / --gamma / --cost-weight | 25 / 500 / 3 / 0 | S 得分权重，按自然尺度直接加权，不再要求和为 1 |
 | --temperature | 0.5 | LLM 温度 |
 | --n-factors | 10 | 原回测脚本每天最多选取因子数 |
 
 机制数和子代数均没有命令行参数。机制数由 LLM 依复杂度选择，不超过 5；
 子代数由 LLM 依 mechanism 数量、规模与 factor 复杂度选择 0–5 个，允许主动不生成。
-R 与 U 均为 signed RankIC；signal_distance=1-mean_daily_Spearman(f,f')，
+R 与 U 均为 signed RankIC；U 由 in-sample OLS 回归组合得到，与 `run_adaptive_combination.py` 同一形式。
+signal_distance=1-mean_daily_Spearman(f,f')，
 有符号相关性，不同于入池检查用的 mean_daily_abs_Spearman。
 
 ## 完成与验证

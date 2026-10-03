@@ -87,9 +87,9 @@ def main():
     for name, default in dict(seed=0, cuda=0, rounds=10, parents=10,
                               pool_capacity=50, horizon=20,
                               max_nodes=60, max_depth=10, max_backtrack=100, chunk_size=64,
-                              llm_timeout=180, n_factors=10).items():
+                              llm_timeout=180, n_factors=20).items():
         parser.add_argument("--" + name.replace("_", "-"), type=int, default=default, dest=name)
-    for name, default in dict(alpha=0.4, beta=0.3, gamma=0.2, cost_weight=0.1, temperature=0.5, correlation_threshold=0.9).items():
+    for name, default in dict(alpha=25.0, beta=500.0, gamma=3.0, cost_weight=0.0, temperature=0.5, correlation_threshold=0.9).items():
         parser.add_argument("--" + name.replace("_", "-"), type=float, default=default, dest=name)
     for name in ("no-cf-evidence", "no-pool-credit", "no-memory", "no-pool-selection"):
         parser.add_argument("--" + name, action="store_true")

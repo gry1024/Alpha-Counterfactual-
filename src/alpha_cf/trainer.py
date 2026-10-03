@@ -3,6 +3,7 @@ from collections import Counter
 import json
 import math
 import os
+import random
 import re
 import time
 
@@ -99,23 +100,22 @@ class AlphaCFTrainer:
         self.save()
 
     def select_parents(self):
-        ranked = sorted(self.pool.exprs, key=lambda e: self.pool.evaluate(e)["reward"], reverse=True)
-        count = min(self.args.parents, len(ranked))
-        # Default: top 5, then 5 least visited among the remaining pool members.
-        selected = ranked[:count // 2]
-        remaining = ranked[count // 2:]
-        selected += sorted(remaining, key=lambda e: self.visits[str(e)])[:count - len(selected)]
+        # Uniform random sample without replacement; no reward/visit filtering.
+        count = min(self.args.parents, len(self.pool.exprs))
+        selected = random.sample(self.pool.exprs, count)
         for expr in selected:
             self.visits[str(expr)] += 1
         return selected
 
-    def diagnose(self, parent, utility, total):
+    def diagnose(self, parent, utility):
         reward = self.pool.evaluate(parent)["reward"]
         proposals = self.ask(PROMPT_DIAGNOSIS, dict(parent=str(parent), reward=reward,
             nodes=[dict(path=p, expression=str(n)) for p, n in walk(parent)],
             cf_enabled=not self.args.no_cf_evidence,
             limits=dict(nodes=self.args.max_nodes, depth=self.args.max_depth, lookback=self.args.max_backtrack)))["mechanisms"]
         evidence = []
+        index = next(i for i, e in enumerate(self.pool.exprs) if str(e) == str(parent))
+        peers = self.pool.exprs[:index] + self.pool.exprs[index + 1:]
         for mechanism in proposals[:5]:
             try:
                 node = at(parent, mechanism["path"])
@@ -129,12 +129,13 @@ class AlphaCFTrainer:
                     if not math.isfinite(correlation):
                         raise ValueError("Counterfactual has no shared varying observations")
                     row["counterfactual"] = str(changed)
-                    row["delta_cf"] = abs(result["reward"]) - abs(reward)
+                    # row["delta_cf"] = abs(result["reward"]) - abs(reward)
+                    row["delta_cf"] = result["reward"] - reward  # Use signed difference for RankIC
                     row["signal_distance"] = 1 - correlation
                     if not self.args.no_pool_credit:
                         # C_pool = U(P_{-f} ∪ {f'}) - U(P); larger means the edit improves the pool.
-                        signal = (total - self.pool.signal(parent) + self.pool.signal(changed)) / len(self.pool.exprs)
-                        credit = self.pool.score_signals(signal.unsqueeze(0))[0].item() - utility
+                        # Uses OLS-weighted utility, matching run_adaptive_combination.
+                        credit = self.pool.utility(peers + [changed]) - utility
                         if not math.isfinite(credit):
                             raise ValueError("Counterfactual pool has no usable variation")
                         row["pool_credit"] = credit
@@ -178,7 +179,7 @@ class AlphaCFTrainer:
         save_json(self.log_dir / f"pool_{self.step}.json", payload)
         save_json(self.log_dir / "memory.json", self.memory)
         save_json(self.log_dir / "lineage.json", self.lineage)
-        print(f"Pool {self.step}: size={len(self.pool.exprs)}, RankIC={self.pool.utility():.4f}", flush=True)
+        print(f"Pool {self.step}: size={len(self.pool.exprs)}, OLS_U={self.pool.utility():.4f}", flush=True)
 
     def train(self, seeds):
         self.initialize(seeds)
@@ -186,10 +187,9 @@ class AlphaCFTrainer:
             self.step = step
             started = time.monotonic()
             parents = self.select_parents()
-            total = sum(self.pool.signal(e) for e in self.pool.exprs)
             utility = self.pool.utility()
             print(f"Round {step}/{self.args.rounds}: {len(parents)} parents", flush=True)
-            evidence = [self.diagnose(parent, utility, total) for parent in parents]
+            evidence = [self.diagnose(parent, utility) for parent in parents]
             previous_children, added = [], []
             for parent_expr, parent in zip(parents, evidence):
                 children, descriptions = self.evolve(parent, previous_children)
