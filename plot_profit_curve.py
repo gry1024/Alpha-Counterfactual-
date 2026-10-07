@@ -8,11 +8,11 @@ Style mimics `img/backtest.png`:
   - Legend at top, frameless
 
 Edit `RUNS` at the top to add / remove / rename a series.  Each value can be:
-  - str  : path to `ret_s.npy`, default start date 2023-01-03
+  - str  : path to `ret_s.npy`, default start date 2023-05-01
   - tuple[str, str] : (path, "YYYY-MM-DD" start date)
   - dict  : full config with these keys:
       path           (str,  required)
-      start_date     (str,  default DEFAULT_START_DATE = "2023-01-03")
+      start_date     (str,  default DEFAULT_START_DATE = "2023-05-01")
       data_start_date(str,  when the .npy file actually starts — used
                       together with `start_date` to skip leading entries)
       color          (str,  default = PALETTE[name])
@@ -38,17 +38,19 @@ import seaborn as sns
 
 # ---------------------------------------------------------------------------
 # 1) Series registry — edit here.
+# Legacy files retain their original start; new files use ret_s_dates.npy.
 # ---------------------------------------------------------------------------
 RUNS: dict = {
-    "AlphaSAGE": "data/gfn_logs/pool_50/gfn_gnn_csi300_50_2-0.01-1.0-1.0-1.0-0.3-linear-0.0/ret_s.npy",
-    "AlphaPROBE": "data/knowledge_logs/pool_50/kg_dag_and_bayesian_icir_and_mutl_new_no_decay_MiniMax-M3_5_csi300_0.5_7_50_0.9_50_20_0.006_True_True_False_True_0.7_0.1_0.05/ret_s.npy",
-    "AlphaGen":  "data/ppo_logs/pool_20/ppo_csi300_20_0-20260905132532/ppo_csi300_20_0_20260905132532/ret_s.npy",
-    "AlphaCF":   "data/cf_logs/20261002_162225_644686_csi300_0/ret_s.npy",
+    "AlphaSAGE": {"path": "data/gfn_logs/pool_50/gfn_gnn_csi300_50_2-0.01-1.0-1.0-1.0-0.3-linear-0.0/ret_s.npy", "data_start_date": "2023-05-01"},
+    "AlphaPROBE": {"path": "data/knowledge_logs/pool_50/kg_dag_and_bayesian_icir_and_mutl_new_no_decay_MiniMax-M3_5_csi300_0.5_7_50_0.9_50_20_0.006_True_True_False_True_0.7_0.1_0.05/ret_s.npy", "data_start_date": "2023-05-01"},
+    "AlphaGen": {"path": "data/ppo_logs/pool_20/ppo_csi300_20_0-20260905132532/ppo_csi300_20_0_20260905132532/ret_s.npy", "data_start_date": "2023-05-01"},
+    "Ours": {"path": "data/cf_logs/20261007_022820_326801_csi300_0/ret_s.npy", "data_start_date": "2023-05-01"},
+    # "AlphaCF_START": {"path": "ret_s.npy", "data_start_date": "2023-05-01"},
 
     "CSI300 Index": {
         "path":            "data/index_real_logs/pool_all/real_csi300/ret_s.npy",
-        "data_start_date": "2022-01-04",   # first entry in the .npy file
-        "start_date":      "2023-01-03",   # align with the alpha series
+        "data_start_date": "2023-05-01",   # first entry in the .npy file
+        "start_date":      "2023-05-01",   # align with the alpha series
         "color":           "#000000",
         "linestyle":       "--",
         "linewidth":       2.2,
@@ -60,14 +62,15 @@ PALETTE: dict[str, str] = {
     "AlphaSAGE":  "#2E8B57",  # sea green
     "AlphaPROBE": "#E07B5A",  # muted coral
     "AlphaGen":   "#82B366",  # light green
-    "AlphaCF":    "#4C72B0",  # steel blue
-   
+    "Ours":    "#FF0000",  # red
+    # "AlphaCF_START": "#4C72B0",  # steel blue
 }
 
 # 3) Plot knobs.
 TITLE = "CSI300 Profit Curve"
 OUTPUT_PNG = "profit_curve.png"
-DEFAULT_START_DATE = "2023-01-03"
+DEFAULT_START_DATE = "2023-05-01"
+DEFAULT_END_DATE = "2026-04-30"
 LINEWIDTH = 2.2
 
 # Real trading calendar (identical to the one the cn backtests use).  All
@@ -165,24 +168,27 @@ def main() -> None:
         if ret is None:
             continue
 
-        # Determine start_date for the plotted curve.
         start_date = cfg.get("start_date", DEFAULT_START_DATE)
-
-        # If the .npy file's first entry is earlier than start_date,
-        # drop those leading entries so dates and prices align.
-        if "data_start_date" in cfg:
-            skip = _entries_before(cfg["data_start_date"], start_date, calendar)
-            ret = ret[skip:]
-
-        if ret.size == 0:
-            print(f"[warn] {name}: nothing left to plot after slicing")
+        sidecar = _resolve(path, here).with_name("ret_s_dates.npy")
+        if sidecar.exists():
+            dates = np.load(sidecar).astype("datetime64[ns]")
+            if len(dates) != len(ret):
+                raise ValueError(f"{name}: return/date lengths differ")
+        else:
+            dates = np.asarray(_trading_dates(cfg.get("data_start_date", start_date),
+                                             len(ret), calendar), dtype="datetime64[ns]")
+            if len(dates) != len(ret):
+                raise ValueError(f"{name}: returns extend beyond the real calendar")
+        keep = (dates >= np.datetime64(start_date)) & (dates <= np.datetime64(DEFAULT_END_DATE))
+        ret, dates = ret[keep], dates[keep]
+        if not len(ret):
+            print(f"[warn] {name}: no returns in the Test window")
             continue
-
-        dates = _trading_dates(start_date, len(ret), calendar)
-        if len(dates) < len(ret):
-            print(f"[warn] {name}: calendar only provides {len(dates)} trading days "
-                  f"from {start_date}; truncating series {len(ret)} -> {len(dates)}")
-            ret = ret[: len(dates)]
+        expected_end = max(d for d in calendar if d <= datetime.fromisoformat(DEFAULT_END_DATE))
+        expected_start = min(d for d in calendar if d >= datetime.fromisoformat(start_date))
+        partial = dates[0] > np.datetime64(expected_start) or dates[-1] < np.datetime64(expected_end)
+        if partial:
+            print(f"[warn] {name}: existing results cover {str(dates[0])[:10]}..{str(dates[-1])[:10]}; partial Test coverage")
         cum = _normalize_to_one(ret)
         ax.plot(
             dates,
@@ -190,7 +196,7 @@ def main() -> None:
             color=cfg.get("color", PALETTE.get(name)),
             linestyle=cfg.get("linestyle", "-"),
             linewidth=cfg.get("linewidth", LINEWIDTH),
-            label=name,
+            label=name + (" (partial)" if partial else ""),
             solid_capstyle="round",
         )
         summary.append((name, len(ret), float(ret.mean()), float(ret.std()), float(cum[-1])))
@@ -216,7 +222,8 @@ def main() -> None:
 
     ax.set_xlabel("Date")
     ax.set_ylabel("Cumulative Return")
-    ax.set_title(TITLE, pad=20)
+    ax.set_title(f"{TITLE} | {DEFAULT_START_DATE} to {DEFAULT_END_DATE}", pad=70)
+    ax.set_xlim(datetime.fromisoformat(DEFAULT_START_DATE), datetime.fromisoformat(DEFAULT_END_DATE))
 
     # Y-limits with headroom.
     ymin, ymax = ax.get_ylim()
@@ -230,7 +237,7 @@ def main() -> None:
 
     print()
     print(f"{'Name':<14} {'N':>5} {'Mean':>9} {'Std':>9} {'Final':>10}")
-    for name, n, m, s, f in summary:
+    for name, n, m, s, f in sorted(summary, key=lambda x: x[4], reverse=True):
         print(f"{name:<14} {n:>5} {m*100:>+8.3f}% {s*100:>8.3f}% {f:>+9.4f}")
 
 

@@ -272,17 +272,14 @@ class AlphaKnowledgeLogger:
         state = pool.state
         exprs = state.get('exprs', [])
         os.environ["CUDA_VISIBLE_DEVICES"] = str(self.args.cuda)
-        if self.args.instruments == 'sp500':
-            QLIB_PATH = 'PATH/TO/data/qlib_data/us_data_qlib'
-        else:
-            QLIB_PATH = 'PATH/TO/.qlib/qlib_data/cn_data'
+        QLIB_PATH = "data/qlib_data/us_data_qlib_latest" if self.args.instruments == 'sp500' else "data/qlib_data/cn_data_rolling"
         close = exp_module.Feature(exp_module.FeatureType.CLOSE)
         target = exp_module.Ref(close, - 20) / close - 1
         train_end_time = f'2020-12-31'
         valid_start_time = f'2021-01-01'
         valid_end_time = f'2022-06-30'
-        test_start_time = f'2022-07-01'
-        test_end_time = f'2025-06-30'
+        test_start_time = f'2023-05-01'
+        test_end_time = f'2026-04-30'
         data_all = StockData(instrument=self.args.instruments, start_time='2010-01-01', end_time=test_end_time, qlib_path=QLIB_PATH)
         data_valid = StockData(instrument=self.args.instruments, start_time=valid_start_time, end_time=valid_end_time, qlib_path=QLIB_PATH)
         data_test = StockData(instrument=self.args.instruments, start_time=test_start_time, end_time=test_end_time, qlib_path=QLIB_PATH)
@@ -312,11 +309,13 @@ class AlphaKnowledgeLogger:
         pred_list = []
         shift = self.args.label_days + 1  # To avoid lookahead bias
         
-        valid_test_days = data_valid.n_days + data_test.n_days
-        start_day = len(fct_tensor) - valid_test_days
+        dates = pd.DatetimeIndex(data_all._dates[data_all.max_backtrack_days:data_all.max_backtrack_days + data_all.n_days])
+        valid_m = np.asarray((dates >= valid_start_time) & (dates <= valid_end_time))
+        test_m = np.asarray((dates >= test_start_time) & (dates <= test_end_time))
+        eval_idx = np.flatnonzero(valid_m | test_m)
         
         print("Starting adaptive combination process...")
-        pbar = tqdm(range(start_day, len(fct_tensor)))
+        pbar = tqdm(eval_idx)
         for cur in pbar:
             # Define rolling window for evaluation
             # begin = 0 if not np.isfinite(self.args.window) else max(0, cur - self.args.window - shift)
@@ -388,7 +387,7 @@ class AlphaKnowledgeLogger:
             # Update progress bar description with running IC
             if len(pred_list) > 1:
                 running_preds = torch.stack(pred_list, dim=0)
-                running_targets = tgt_tensor[start_day:cur+1, :, 0]
+                running_targets = tgt_tensor[eval_idx[:len(pred_list)], :, 0]
                 running_ic = batch_pearsonr(running_preds, running_targets).mean().item()
                 pbar.set_description(f"Running IC: {running_ic:.4f}, Factors selected: {len(good_idx)}")
 
@@ -400,11 +399,11 @@ class AlphaKnowledgeLogger:
         all_pred = torch.stack(pred_list, dim=0)
         
         # Slice predictions and targets for validation and test sets
-        pred_valid = all_pred[:data_valid.n_days]
-        pred_test = all_pred[data_valid.n_days:]
+        pred_valid = all_pred[torch.as_tensor(valid_m[eval_idx], device=all_pred.device)]
+        pred_test = all_pred[torch.as_tensor(test_m[eval_idx], device=all_pred.device)]
         
-        tgt_valid = tgt_tensor[start_day : start_day + data_valid.n_days, :, 0]
-        tgt_test = tgt_tensor[start_day + data_valid.n_days :, :, 0]
+        tgt_valid = tgt_tensor[np.flatnonzero(valid_m), :, 0]
+        tgt_test = tgt_tensor[np.flatnonzero(test_m), :, 0]
         
         # Calculate metrics
         valid_results, _ = get_tensor_metrics(pred_valid.cuda(), tgt_valid.cuda(), 0, self.args)

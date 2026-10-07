@@ -12,10 +12,11 @@ def get_data_by_year(
     from gan.utils import load_pickle,save_pickle
     # from gan.utils.qlib import get_data_my
     get_data_my = StockData
+    qlib_path = qlib_path or ("data/qlib_data/us_data_qlib_latest" if instruments == "sp500" else "data/qlib_data/cn_data_rolling")
 
     train_dates=(f"{train_start}-01-01", f"{train_end}-12-31")
     val_dates=(f"{valid_year}-01-01", f"{valid_year}-12-31")
-    test_dates=(f"{test_year}-01-01", f"{test_year+3}-04-30")
+    test_dates=(f"{test_year}-05-01", f"{test_year+3}-04-30")
 
     train_start,train_end = train_dates
     valid_start,valid_end = val_dates

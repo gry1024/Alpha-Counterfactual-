@@ -161,7 +161,7 @@ def run(args):
     train_end_time = '2021-12-31'
     valid_start_time = '2022-01-01'
     valid_end_time = '2022-12-31'
-    test_start_time = '2023-01-01'
+    test_start_time = '2023-05-01'
     test_end_time = '2026-04-30'
 
     data = StockData(instrument=args.instruments,

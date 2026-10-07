@@ -321,12 +321,32 @@ def run(args):
     train_end_time = f'{args.train_end_year}-12-31'
     valid_start_time = f'{args.train_end_year + 1}-01-01'
     valid_end_time = f'{args.train_end_year + 1}-12-31'
-    test_start_time = '2023-01-01'
+    test_start_time = '2023-05-01'
     test_end_time = '2026-04-30'
+
+    if args.expressions_file.endswith(".json"):
+        with open(args.expressions_file, encoding="utf-8") as f:
+            benchmark = json.load(f).get("benchmark")
+        if benchmark:
+            data_index = StockData(instrument=[benchmark], start_time=test_start_time,
+                                   end_time=test_end_time, qlib_path=QLIB_PATH, device=device)
+            ret_s = return_target.evaluate(data_index)[:, 0]
+            if not torch.isfinite(ret_s).all():
+                raise ValueError("Index benchmark contains missing daily returns")
+            output = os.path.dirname(args.expressions_file)
+            np.save(os.path.join(output, "ret_s.npy"), ret_s.cpu().numpy())
+            np.save(os.path.join(output, "ret_s_dates.npy"), _trading_days(data_index).values)
+            mean, std = ret_s.mean().item(), ret_s.std().item()
+            metrics = dict(ret=mean * len(ret_s) / 3, ret_std=std, retir=mean / std,
+                           ret_sharpe=batch_sharpe_ratio(ret_s, 0.0).item(),
+                           ret_mdd=batch_max_drawdown(ret_s).item())
+            print(f"CSI300 index benchmark: {test_start_time}..{test_end_time}, n={len(ret_s)}")
+            print(pd.DataFrame([metrics], index=["Test"]).to_string())
+            return
 
     all_end = max(valid_end_time, test_end_time)
     data_all = StockData(instrument=args.instruments,
-                         start_time='2010-01-01',
+                         start_time='2015-01-01',
                          end_time=all_end,
                          qlib_path=QLIB_PATH,
                          device=device)
@@ -337,7 +357,7 @@ def run(args):
     print(
         f"[combo] valid {valid_start_time}..{valid_end_time}  n={int(valid_m.sum())}  "
         f"test {test_start_time}..{test_end_time}  n={int(test_m.sum())}  "
-        f"data_all 2010-01-01..{all_end}  n={len(dates)}",
+        f"data_all 2015-01-01..{all_end}  n={len(dates)}",
         flush=True,
     )
     if (valid_m & test_m).any():
@@ -365,6 +385,7 @@ def run(args):
         ret_s = ret_s.cpu().numpy()
         save_path = os.path.join(os.path.dirname(args.expressions_file), 'ret_s.npy')
         np.save(save_path, ret_s)
+        np.save(save_path.replace("ret_s.npy", "ret_s_dates.npy"), _trading_days(data_test).values)
         # Format and print results
         results_df = pd.DataFrame([test_results], index=['Test'])
         print("\n--- Final Performance Metrics ---")
@@ -518,6 +539,7 @@ def run(args):
         ret_s = ret_s.cpu().numpy() if torch.is_tensor(ret_s) else ret_s
         save_path = os.path.join(os.path.dirname(args.expressions_file), 'ret_s.npy')
         np.save(save_path, ret_s)
+        np.save(save_path.replace("ret_s.npy", "ret_s_dates.npy"), dates[test_m].values)
         results_df = pd.DataFrame(rows, index=names)
         print("\n--- Final Performance Metrics ---")
         
@@ -536,10 +558,16 @@ def run(args):
         print("="*50)
 
 
+    if getattr(args, "metrics_file", None):
+        results_df.to_json(args.metrics_file, orient="index", indent=2)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--expressions_file', type=str, required=True,
                         help='Path to a JSON file containing a list of alpha expressions.')
+    parser.add_argument('--metrics_file', type=str, default=None,
+                        help='Optional JSON output for performance metrics.')
     parser.add_argument('--instruments', type=str, default='csi300')
     parser.add_argument('--train_end_year', type=int, default=2021)
     parser.add_argument('--threshold_ric', type=float, default=0.015)

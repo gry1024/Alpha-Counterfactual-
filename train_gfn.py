@@ -148,7 +148,7 @@ def train(args):
     QLIB_PATH = "data/qlib_data/us_data_qlib_latest" if args.instrument == 'sp500' else "data/qlib_data/cn_data_rolling"
     # Initialize StockData and target expression
     data = StockData(instrument=args.instrument, start_time='2010-01-01', end_time='2021-12-31', qlib_path=QLIB_PATH)
-    data_test = StockData(instrument=args.instrument, start_time='2023-01-01', end_time='2026-04-30', qlib_path=QLIB_PATH)
+    data_test = StockData(instrument=args.instrument, start_time='2023-05-01', end_time='2026-04-30', qlib_path=QLIB_PATH)
     close = Feature(FeatureType.CLOSE)
     target = Ref(close, -20) / close - 1
     

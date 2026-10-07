@@ -50,12 +50,30 @@ def test(args, source):
     if json.loads(source.read_text()).get("split") != "train":
         raise ValueError("Test requires a pool_*.json from training")
     root = Path(__file__).resolve().parent
+    metrics_path = source.with_suffix(".metrics.json")
     env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(root / "src"), os.environ.get("PYTHONPATH", "")]))
     subprocess.run([sys.executable, str(root / "run_adaptive_combination.py"),
         "--expressions_file", str(source.resolve()), "--instruments", args.instrument,
         "--train_end_year", "2021", "--label_days", str(args.horizon), "--cuda", str(args.cuda),
-        "--seed", str(args.seed), "--n_factors", str(args.n_factors), "--chunk_size", str(args.chunk_size)],
+        "--seed", str(args.seed), "--n_factors", str(args.n_factors), "--chunk_size", str(args.chunk_size),
+        "--use_weights", "True", "--metrics_file", str(metrics_path.resolve())],
         cwd=root, env=env, check=True)
+    round_id = int(source.stem.removeprefix("pool_")) if source.stem.startswith("pool_") else args.rounds
+    result_path = source.parent / "res.txt"
+    with result_path.open("a", encoding="utf-8") as file:
+        for dataset, values in json.loads(metrics_path.read_text()).items():
+            file.write(json.dumps(dict(round=round_id, dataset=dataset, **values)) + "\n")
+    from matplotlib.figure import Figure
+    history = pd.read_json(result_path, lines=True)
+    figure = Figure(figsize=(10, 4), layout="constrained")
+    for axis, metric in zip(figure.subplots(1, 2), ("ic", "ret")):
+        for dataset, rows in history.groupby("dataset"):
+            rows = rows.drop_duplicates("round", keep="last").sort_values("round")
+            axis.plot(rows["round"], rows[metric], marker="o", label=dataset)
+        axis.set(xlabel="Round", ylabel=metric.upper())
+        axis.grid(alpha=0.3)
+        axis.legend()
+    figure.savefig(source.parent / "adaptive_combination.png", dpi=150)
 
 
 def train(args):
@@ -67,15 +85,11 @@ def train(args):
     pool = AlphaCFPool(data, target, args)
     trainer = AlphaCFTrainer(pool, args, log_dir)
     seeds = json.loads(Path(args.start_pool).read_text())["exprs"]
-    trainer.train(seeds)
-    for i, (expr, metrics) in enumerate(zip(pool.exprs, pool.to_dict()["metrics"])):
-        print(f"> Alpha {i + 1}: RankIC={metrics['reward']:.4f}, expr={expr}", flush=True)
-    pool_path = log_dir / f"pool_{args.rounds}.json"
+    trainer.train(seeds, on_round=lambda step: test(args, log_dir / f"pool_{step}.json"))
     del trainer, data, target
     release()
     del pool
     release()
-    test(args, pool_path)
 
 
 def main():
@@ -87,21 +101,21 @@ def main():
     for name, default in dict(seed=0, cuda=0, rounds=10, parents=10,
                               pool_capacity=50, horizon=20,
                               max_nodes=60, max_depth=10, max_backtrack=100, chunk_size=64,
-                              llm_timeout=180, n_factors=20).items():
+                              llm_timeout=180, n_factors=20, diagnosis_workers=5).items():
         parser.add_argument("--" + name.replace("_", "-"), type=int, default=default, dest=name)
-    for name, default in dict(alpha=25.0, beta=500.0, gamma=3.0, cost_weight=0.0, temperature=0.5, correlation_threshold=0.9).items():
+    for name, default in dict(alpha=50.0, beta=800.0, gamma=2, cost_weight=2, temperature=0.5, correlation_threshold=0.8).items():
         parser.add_argument("--" + name.replace("_", "-"), type=float, default=default, dest=name)
-    for name in ("no-cf-evidence", "no-pool-credit", "no-memory", "no-pool-selection"):
+    for name in ("no-cf-evidence", "no-pool-credit", "no-memory"):
         parser.add_argument("--" + name, action="store_true")
     args = parser.parse_args()
     source = args.test_only
     if source:
         saved = json.loads(Path(source).read_text())
         config = saved.get("args") or json.loads((Path(source).parent / "args.json").read_text())
-        config.update(cuda=args.cuda, test_only=args.test_only)
+        config.update(cuda=args.cuda, test_only=args.test_only, qlib_path=args.qlib_path)
         args = argparse.Namespace(**{k: config.get(k, v) for k, v in vars(args).items()})
     if args.rounds < 0 or min(args.parents,
-            args.pool_capacity, args.horizon, args.chunk_size, args.n_factors) < 1:
+            args.pool_capacity, args.horizon, args.chunk_size, args.n_factors, args.diagnosis_workers, args.llm_timeout) < 1:
         parser.error("Invalid counts")
     if not 0 <= args.correlation_threshold <= 1:
         parser.error("correlation-threshold must be between 0 and 1")

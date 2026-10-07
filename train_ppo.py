@@ -109,7 +109,7 @@ def run(args):
                            end_time='2022-12-31',
                            qlib_path = QLIB_PATH)
     data_test = StockData(instrument=args.instruments,
-                          start_time='2023-01-01',
+                          start_time='2023-05-01',
                           end_time='2026-04-30',
                           qlib_path = QLIB_PATH)
     # calculator_train = QLibStockDataCalculator(data_train, target)

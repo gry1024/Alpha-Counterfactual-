@@ -108,7 +108,7 @@ def run(args):
         window = float('inf')
 
     os.environ["CUDA_VISIBLE_DEVICES"]=str(args.cuda)
-    QLIB_PATH = "data/qlib_data/cn_data_rolling"
+    QLIB_PATH = "data/qlib_data/us_data_qlib_latest" if args.instruments == "sp500" else "data/qlib_data/cn_data_rolling"
 
     close = Feature(FeatureType.CLOSE)
     target = Ref(close, -20) / close - 1
@@ -118,7 +118,7 @@ def run(args):
     valid_start_time = f'{args.train_end_year + 1}-01-01'
     valid_end_time = f'{args.train_end_year + 1}-12-31'
     
-    test_start_time = '2023-01-01'
+    test_start_time = '2023-05-01'
     test_end_time = '2026-04-30'
 
     data_all = StockData(instrument=args.instruments,
@@ -175,7 +175,11 @@ def run(args):
     weights_list = []
 
     # evaluate from the first day of the valid set untill the last day of the test set
-    pbar = tqdm(range(len(fct_tensor)-data_test.n_days-data_valid.n_days,len(fct_tensor)))
+    dates = pd.DatetimeIndex(data_all._dates[data_all.max_backtrack_days:data_all.max_backtrack_days + data_all.n_days])
+    valid_m = np.asarray((dates >= valid_start_time) & (dates <= valid_end_time))
+    test_m = np.asarray((dates >= test_start_time) & (dates <= test_end_time))
+    eval_idx = np.flatnonzero(valid_m | test_m)
+    pbar = tqdm(eval_idx)
     for cur in pbar:
 
         # control the past window that we use to evaluate the factors in order to filter factors and generate the weights
@@ -261,17 +265,14 @@ def run(args):
         pred_list.append(pred[:,0])
 
     # infer the valid set and save the results
-    num_1 = data_valid.n_days
-    num_2 = data_test.n_days
     all_pred = torch.stack(pred_list,dim=0)
-    all_pred = all_pred[-num_2-num_1:-num_1]
+    all_pred = all_pred[torch.as_tensor(valid_m[eval_idx], device=all_pred.device)]
     torch.save(all_pred.detach().cpu(),f"{tensor_save_path}/pred_valid_{name}.pt")
 
 
     # infer the test set and save the results
-    num_ = data_test.n_days
     all_pred = torch.stack(pred_list,dim=0)
-    all_pred = all_pred[-num_:]
+    all_pred = all_pred[torch.as_tensor(test_m[eval_idx], device=all_pred.device)]
     torch.save(all_pred.detach().cpu(),f"{tensor_save_path}/pred_{name}.pt")
 
     # torch.cuda.empty_cache()
