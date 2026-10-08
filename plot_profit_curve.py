@@ -41,10 +41,11 @@ import seaborn as sns
 # Legacy files retain their original start; new files use ret_s_dates.npy.
 # ---------------------------------------------------------------------------
 RUNS: dict = {
+    "Alpha158": {"path": "data/alpha158_logs/csi300/ret_s.npy", "data_start_date": "2023-05-01"},
     "AlphaSAGE": {"path": "data/gfn_logs/pool_50/gfn_gnn_csi300_50_2-0.01-1.0-1.0-1.0-0.3-linear-0.0/ret_s.npy", "data_start_date": "2023-05-01"},
     "AlphaPROBE": {"path": "data/knowledge_logs/pool_50/kg_dag_and_bayesian_icir_and_mutl_new_no_decay_MiniMax-M3_5_csi300_0.5_7_50_0.9_50_20_0.006_True_True_False_True_0.7_0.1_0.05/ret_s.npy", "data_start_date": "2023-05-01"},
     "AlphaGen": {"path": "data/ppo_logs/pool_20/ppo_csi300_20_0-20260905132532/ppo_csi300_20_0_20260905132532/ret_s.npy", "data_start_date": "2023-05-01"},
-    "Ours": {"path": "data/cf_logs/20261007_022820_326801_csi300_0/ret_s.npy", "data_start_date": "2023-05-01"},
+    "Ours": {"path": "data/cf_logs/20261007_233241_507128_csi300_0_MiniMax-M3/ret_s.npy", "data_start_date": "2023-05-01"},
     # "AlphaCF_START": {"path": "ret_s.npy", "data_start_date": "2023-05-01"},
 
     "CSI300 Index": {
@@ -59,6 +60,7 @@ RUNS: dict = {
 
 # 2) Palette — muted tones reminiscent of `img/backtest.png`.
 PALETTE: dict[str, str] = {
+    "Alpha158":   "#4C72B0",  # steel blue
     "AlphaSAGE":  "#2E8B57",  # sea green
     "AlphaPROBE": "#E07B5A",  # muted coral
     "AlphaGen":   "#82B366",  # light green

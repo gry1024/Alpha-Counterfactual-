@@ -63,7 +63,7 @@ class AlphaCFTrainer:
             try:
                 response = self.client.chat.completions.create(model=self.model,
                     messages=[dict(role="system", content=PROMPT_HEAD), dict(role="user", content=user_prompt)],
-                    temperature=self.args.temperature, top_p=1, stop="", timeout=timeout)
+                    temperature=self.args.temperature, top_p=1, timeout=timeout)
             except (APIConnectionError, APIStatusError) as exc:
                 retryable = isinstance(exc, APIConnectionError) or exc.status_code in (408, 409, 429) or exc.status_code >= 500
                 label = type(exc).__name__ + (f" (HTTP {exc.status_code})" if isinstance(exc, APIStatusError) else "")

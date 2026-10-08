@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AlphaCME — train_cf.py 端到端走读</title>
+<style>
+  :root{
+    --ink:#1a1a1a; --muted:#666; --line:#e6e6e6; --line2:#d4d4d4;
+    --bg:#fff; --accent:#0b6bcb; --code:#f6f8fa; --code-ink:#24292e;
+    --best:#0f7a30; --sec:#0b6bcb;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.55}
+  .wrap{max-width:980px;margin:0 auto;padding:28px 28px 80px}
+  h1{font-size:22px;margin:0 0 4px;letter-spacing:-.01em}
+  h1 small{font-size:13px;color:var(--muted);font-weight:400;margin-left:8px}
+  .sub{color:var(--muted);font-size:13px;margin:0 0 22px}
+  h2{font-size:16px;margin:28px 0 8px;padding:6px 0;border-bottom:1px solid var(--line);letter-spacing:-.005em}
+  h3{font-size:14px;margin:18px 0 6px;color:#222}
+  hr{border:0;border-top:1px solid var(--line);margin:18px 0}
+  code{font-family:var(--mono);font-size:12.5px;background:var(--code);color:var(--code-ink);padding:1px 5px;border-radius:3px}
+  pre{background:var(--code);border:1px solid var(--line);border-radius:4px;padding:10px 12px;margin:8px 0;overflow-x:auto;line-height:1.45;font-size:12px}
+  pre code{background:none;padding:0}
+  table{border-collapse:collapse;width:100%;margin:8px 0 14px;font-size:12.5px}
+  th,td{border:1px solid var(--line2);padding:5px 8px;text-align:left;vertical-align:top}
+  th{background:#fafbfc;font-weight:600;color:#222}
+  td.num{font-family:var(--mono);text-align:right}
+  td.center{text-align:center}
+  .k{font-family:var(--mono);font-size:12px;background:#eef3f8;color:#0b4a85;padding:1px 5px;border-radius:3px;white-space:nowrap}
+  .v{font-family:var(--mono);font-size:12px;color:#333}
+  ul,ol{margin:6px 0 10px;padding-left:22px}
+  li{margin:2px 0}
+  .best{font-weight:700;color:var(--best)}
+  .sec{text-decoration:underline;text-decoration-thickness:1.5px;text-underline-offset:2px;color:var(--sec)}
+  .muted{color:var(--muted)}
+  .flow{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 14px}
+  .flow .step{flex:1 1 130px;min-width:130px;border:1px solid var(--line2);border-radius:4px;padding:8px 10px;background:#fcfcfc}
+  .flow .step b{display:block;font-size:13px;margin-bottom:2px}
+  .flow .step span{font-size:12px;color:var(--muted)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+  .box{border:1px solid var(--line);border-radius:4px;padding:10px 12px;background:#fcfcfc}
+  .box h4{margin:0 0 6px;font-size:13px;color:#333}
+  .arrow{color:var(--muted);font-family:var(--mono);font-size:12px;margin:0 6px}
+  details{border:1px solid var(--line);border-radius:4px;padding:6px 10px;background:#fcfcfc;margin:6px 0}
+  details>summary{cursor:pointer;font-weight:600;font-size:13px}
+  .small{font-size:12px;color:var(--muted)}
+  .legend{font-size:12px;color:var(--muted);margin:4px 0 0}
+  .legend b{color:var(--best)}
+  .legend u{color:var(--sec);text-decoration-thickness:1.5px;text-underline-offset:2px}
+  .pill{display:inline-block;font-size:11px;padding:1px 6px;border:1px solid var(--line2);border-radius:9px;color:#444;background:#f6f6f6;margin-right:4px}
+  .ok{color:#0f7a30} .warn{color:#a55a00}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>AlphaCME — <code>train_cf.py</code> 端到端走读 <small>CN Test · 2023-05 → 2026-04</small></h1>
+<p class="sub">六阶段闭环流水线：加载种子 → 反事实诊断 → 机制证据 → 记忆 → 直接后代 → 父代替换，循环 10 轮；每轮得到的因子池交给 <code>run_adaptive_combination.py</code> 进行自适应回测。</p>
+
+<h2>0. 流水线概览</h2>
+<div class="flow">
+  <div class="step"><b>① 初始化</b><span>从 <code>start_pool.json</code> 加载 50 个种子；冻结顺序与符号；分配 chain ID</span></div>
+  <div class="step"><b>② 选择父代</b><span>按 OLS 删除贡献挑选（低分 + 随机），每轮 N=10</span></div>
+  <div class="step"><b>③ 诊断</b><span>LLM 将父代分解为 ≤5 个机制，并给出反事实编辑</span></div>
+  <div class="step"><b>④ 证据</b><span>在完整 Train 上测量 <code>Δcf</code>、<code>C_pool</code>、<code>signal_distance</code></span></div>
+  <div class="step"><b>⑤ 记忆</b><span>按链路保存理解、机制、决策的历史</span></div>
+  <div class="step"><b>⑥ 后代与替换</b><span>LLM 提出 0–5 个子代；父代组与子代组在 <code>S(f|P)</code> 下竞争</span></div>
+</div>
+
+<p class="small">每轮结束后，因子池 JSON 被喂给 <code>run_adaptive_combination.py</code> 以产出 Test 指标与收益曲线 PNG。</p>
+
+<hr>
+
+<h2>1. 命令行与环境设置 <span class="pill">main()</span></h2>
+<table>
+<thead><tr><th style="width:30%">参数</th><th>默认值</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><code>--instrument</code></td><td><code>csi300</code></td><td>也支持 <code>sp500</code></td></tr>
+<tr><td><code>--qlib-path</code></td><td>环境变量 <code>QLIB_PATH_CN/SP500</code>，否则 <code>data/qlib_data/...</code></td><td>解析为绝对路径</td></tr>
+<tr><td><code>--start-pool</code></td><td><code>start_pool.json</code></td><td>50 个精选种子（冻结，不再重选）</td></tr>
+<tr><td><code>--rounds</code></td><td><code>10</code></td><td>演化轮数</td></tr>
+<tr><td><code>--seed</code>, <code>--cuda</code>, <code>--chunk-size</code>, <code>--horizon</code></td><td>0 / 0 / 64 / 20</td><td>numpy/torch 随机种子；GPU 编号；评估分块大小；前向收益天数</td></tr>
+<tr><td><code>--pool-capacity</code>, <code>--parents</code></td><td>50 / 5</td><td>因子池始终保持 |P|=50；每轮父代数</td></tr>
+<tr><td><code>--max-nodes</code>, <code>--max-depth</code>, <code>--max-backtrack</code></td><td>60 / 10 / 100</td><td>AST 与历史回溯上限</td></tr>
+<tr><td><code>--llm-timeout</code>, <code>--diagnosis-workers</code></td><td>180 / 5</td><td>单次调用超时（秒）；并发 LLM 诊断数</td></tr>
+<tr><td><code>--alpha</code>, <code>--beta</code>, <code>--gamma</code>, <code>--cost-weight</code></td><td>50 / 800 / 2 / 2</td><td>打分函数 <code>S(f|P) = α|R| + β·C_pool + γ·D + λ·(1−cost)</code> 中的权重</td></tr>
+<tr><td><code>--temperature</code>, <code>--correlation-threshold</code></td><td>0.5 / 0.8</td><td>LLM 温度 T；子代须满足 <code>1−D ≤ 0.8</code>（相对同伴）</td></tr>
+<tr><td><code>--n-factors</code></td><td>20</td><td>最终组合步骤中的 top-K</td></tr>
+<tr><td><code>--no-cf-evidence</code>, <code>--no-pool-credit</code>, <code>--no-memory</code></td><td>off</td><td>消融开关</td></tr>
+<tr><td><code>--test-only <FINAL_JSON></code></td><td>—</td><td>仅对已保存的因子池重新跑回测</td></tr>
+</tbody>
+</table>
+
+<p class="small">解析参数后加载 <code>.env</code>（提供 <code>OPENAI_API_KEY</code>、<code>OPENAI_BASE_URL</code>、<code>OPENAI_MODEL_NAME</code>）；为 <code>numpy</code> / <code>torch</code> 设定随机种子；在 <code>data/cf_logs/<ts>_<instrument>_<seed>_<model></code> 下创建日志目录。</p>
+
+<hr>
+
+<h2>2. 数据加载 <span class="pill">load_data()</span></h2>
+<p>读取 Qlib 日日历，截取 <code>Train = 2015-01-01 → 2021-12-31</code>，随后构造一个带 <code>max_backtrack_days = 100</code> 额外历史的 <code>StockData</code> 窗口。校验日历对齐，丢弃 bak DataFrame，并构造前向收益标签：</p>
+
+<pre><code>target[t] = close[t+h] / close[t] - 1,  h = --horizon = 20
+mask out:  NaN, non-finite,  close ≤ 0  (either side)
+print(f"{split}: {len(target)} labelled days, {data.n_stocks} stocks")</code></pre>
+
+<p class="small">SPLITS = <code>{"train": ("2015-01-01", "2021-12-31")}</code>。Test / Valid 窗口由 <code>run_adaptive_combination.py</code> 拥有，AlphaCME 从不读取它们。</p>
+
+<hr>
+
+<h2>3. 因子池与训练器构建</h2>
+<p><code>AlphaCFPool(data, target, args)</code> 缓存 <code>{expression → (signal, reward, cost)}</code>，计算 <code>label_days</code>（Train 中至少有 2 个有限且非常量标签的日期），并对外暴露以下方法：</p>
+<table>
+<thead><tr><th>方法</th><th>返回</th><th>作用</th></tr></thead>
+<tbody>
+<tr><td><code>evaluate(expr)</code></td><td><code>{signal, reward, cost}</code></td><td>将数据分块得到信号张量；排序到 [-0.5, 0.5]；与目标逐日 Spearman；<code>reward = label_days 上的均值</code>（未定义 IC → 0）；cost 为换手率代理</td></tr>
+<tr><td><code>utility(exprs)</code></td><td>U(P)</td><td>在完整 Train 上拟合 OLS 权重 → 合成信号 → 带符号的日度 IC → 取均值</td></tr>
+<tr><td><code>correlation(a, b, abs)</code></td><td>ρ</td><td>两个缓存信号在日度 Spearman 上的均值</td></tr>
+<tr><td><code>equivalent(a, b)</code></td><td>bool</td><td>有限掩码相同，且排序在 1e-6 内相等（或整体反向）</td></tr>
+<tr><td><code>signal_distance(a, b)</code></td><td>[0,1]</td><td>在扁平化排序信号上计算 <code>1 − q·|cos|</code>，其中 <code>q = 掩码交集/并集</code></td></tr>
+<tr><td><code>replace_parent(p, kids)</code></td><td>决策字典</td><td>门控与打分步骤（见 §6）</td></tr>
+</tbody>
+</table>
+
+<p><code>AlphaCFTrainer(pool, args, log_dir)</code> 初始化 LLM 客户端（<code>OPENAI_API_KEY/BASE_URL</code>，<code>timeout=llm_timeout</code>，<code>max_retries=0</code>）、访问计数器、空的 memory，以及 <code>factor_ids</code> / <code>chain_ids</code> 映射。</p>
+
+<hr>
+
+<h2>4. 第 0 轮 — 初始因子池加载 <span class="pill">initialize()</span></h2>
+<pre><code>seeds = json.loads(Path(args.start_pool).read_text())["exprs"]   # 50 个公式
+trainer.initialize(seeds)
+  ├─ 遍历每个 seed：evaluate() → 缓存；若无效或 reward < 阈值则抛错
+  ├─ self.pool.initialize(candidates)   # 保留顺序与符号
+  ├─ factor_id  = "f0", "f1", ...
+  ├─ chain_id   = 与 factor_id 相同      # 50 条独立链路
+  ├─ self.memory[chain_id] = []
+  └─ self.lineage.append(round=0, outcome="seed", ...)
+self.save()    # 写出 pool_0.json + memory.json + lineage.json</code></pre>
+
+<p>随后 <code>on_round(0)</code> 会在 <code>pool_0.json</code> 上触发 <code>test()</code>（§8），生成初始的 Test 指标行。</p>
+
+<details>
+<summary>因子池 JSON 结构（<code>pool_<i>.json</code>）</summary>
+<pre><code>{
+  "split": "train",
+  "exprs": ["...", "..."],                  // 50 个公式，按因子池顺序
+  "weights": [...],                         // 完整 Train 上的带符号 OLS 系数
+  "metrics": [{"reward":..., "ic":..., "cost":..., ...}, ...],
+  "utility": 0.1234,                        // U(P) 在完整 Train 上的值
+  "factor_ids": ["f0", "f1", ...],          // 当前成员 ID
+  "chain_ids":  ["f0", "f1", ...],          // 种子世系 ID（跨轮稳定）
+  "visits": {"<expr>": <count>, ...}
+}</code></pre>
+</details>
+
+<hr>
+
+<h2>5. 每轮（1 … N） <span class="pill">trainer.train() 循环</span></h2>
+<pre><code>for step in 1..N:
+    started = time.monotonic()
+    parents      = self.select_parents()         # §5.1
+    utility      = self.pool.utility()
+    evidence     = []                            # 诊断结果
+    contexts     = [self.diagnosis_context(p) for p in parents]
+    with ThreadPoolExecutor(max_workers=diagnosis_workers) as ex:
+        reqs = [ex.submit(self.ask, PROMPT_DIAGNOSIS, c) for c in contexts]
+        for parent, req in zip(parents, reqs):
+            evidence.append(self.diagnose(parent, utility, req.result()))   # §5.3
+
+    previous_children, added = [], []
+    for parent_expr, parent_record in zip(parents, evidence):               # 串行
+        children, details = self.evolve(parent_record, previous_children)   # §5.4
+        previous_children.extend(str(c) for c in children)
+        decision = self.pool.replace_parent(parent_expr, children)           # §6
+        # bookkeeping：factor_ids, chain_ids, lineage, memory
+    self.save()                                                              # pool_{step}.json
+    on_round(step)    # → test() 子进程 + res.txt + adaptive_combination.png
+    print(f"  {len(prev)} offspring, {len(added)} replaced, {dt:.1f}s")</code></pre>
+
+<h3>5.1 父代选择 <span class="pill">select_parents()</span></h3>
+<pre><code>contrib[i] = U(P) − U(P \ {exprs[i]})          # OLS 删除贡献，完整 Train
+low_pool  = 按 contrib 取下半部分
+parents   = random.sample(low_pool, k // 2) ++ random.sample(others, k - k//2)
+shuffle(parents)
+self.visits[expr] += 1     # 用于后续轮次的多样性</code></pre>
+<p>按<b>删除贡献</b>挑选，而非单因子的 RankIC；低贡献者与随机其它成员等比例混合，因此热门或较强的因子不会被自动反复选中。</p>
+
+<h3>5.2 诊断上下文 <span class="pill">diagnosis_context()</span></h3>
+<pre><code>parent        = str(parent)
+reward        = pool.evaluate(parent)["reward"]
+previous      = 最近一条历史中的 "parent" 快照（缺省为 {}）
+nodes         = [(path, expr), ...] 对应 walk(parent) 路径上的节点
+cf_enabled    = not args.no_cf_evidence
+limits        = {nodes, depth, lookback}</code></pre>
+
+<h3>5.3 反事实诊断 <span class="pill">diagnose()</span></h3>
+<p>调用 <code>PROMPT_DIAGNOSIS</code>（LLM）。Prompt 要求返回一个 JSON 对象，包含：</p>
+<ul>
+<li><code>understanding</code>：≤ 3 句话（数学行为、临时性经济假设、有效性条件）</li>
+<li><code>mechanisms[]</code>（≤ 5 个），每项含 <code>path</code>、<code>description</code>、<code>replacement</code>、<code>reason</code></li>
+</ul>
+<p>对每个机制（按提议顺序，重新标记为 <code>m1, m2, …</code>）：</p>
+<pre><code>node       = at(parent, path)                      # 定位子树
+if not no_cf_evidence:
+    changed = ablate(parent, mechanism, args)      # 在 path 处应用 replacement
+    row["counterfactual"]  = str(changed)
+    row["delta_cf"]        = |R(changed)| − |R(parent)|
+    row["signal_distance"] = pool.signal_distance(parent, changed)
+    row["coverage_change"], row["common_rank_correlation"] 来自 pool.signal_comparison(...)
+    if not no_pool_credit:
+        peers   = pool.exprs 去掉当前 parent
+        row["pool_credit"] = U(peers + [changed]) − U    # 完整 Train OLS
+record(mechanism=...)
+</code></pre>
+
+<p>三项证据（与 LLM 看到的保持完全一致；null 表示未测量，而非 0）：</p>
+<table>
+<thead><tr><th>符号</th><th>定义</th><th>含义</th></tr></thead>
+<tbody>
+<tr><td><code>Δcf</code></td><td><code>|R(f')| − |R(f)|</code></td><td>< 0 → 编辑损害了单因子表现</td></tr>
+<tr><td><code>C_pool</code></td><td><code>U(P_{−f} ∪ {f'}) − U(P)</code>，在完整 Train 上</td><td>> 0 → 编辑提升了因子池效用</td></tr>
+<tr><td><code>signal_distance</code></td><td><code>1 − q·|cos(a,b)|</code>，<code>q = |M∩M'|/|M∪M'|</code></td><td>0 → 排序等价（含整体反向）</td></tr>
+</tbody>
+</table>
+
+<details>
+<summary>LLM 调用封装 <span class="pill">ask()</span></summary>
+<ul>
+<li>最多 3 次尝试，截止时间 = <code>now + 3 × llm_timeout</code>；<code>APIConnectionError</code> 或 HTTP 408/409/429/5xx 可重试；其它错误立即抛出</li>
+<li>剥离 <code><think>…</think></code> 块；接受 ```json 围栏``` 包裹的响应体</li>
+<li>校验：必须是 dict；列表字段（<code>mechanisms</code> 或 <code>offspring</code>）必需存在；<code>understanding</code>/<code>updated_understanding</code> 非空；≤ 5 项；字符串字段非空；演化时：<code>evidence_refs ⊆ 当前机制 ID ∪ []</code></li>
+<li>每次 Prompt 与响应都记录到 <code>round_<i>.jsonl</code>（<code>llm_request</code>、<code>llm_response</code>、<code>llm_error</code>、<code>invalid_llm_response</code>、<code>llm_budget_exhausted</code>）</li>
+</ul>
+</details>
+
+<h3>5.4 机制记忆 <span class="pill">memory[chain_id]</span></h3>
+<p>对每条链路，持久化 <code>{parent, decision}</code> 字典的完整有序历史，每条记录包含父代的 <code>understanding</code>、证据行、<code>updated_understanding</code>、所有提议、资格与选择判定、以及任何因子池新增。下一次演化调用会使用完整历史（除非指定 <code>--no-memory</code>）。</p>
+
+<h3>5.5 直接后代生成 <span class="pill">evolve()</span></h3>
+<p>单次 LLM 调用，<code>PROMPT_EVOLUTION</code> 返回：</p>
+<pre><code>{
+  "updated_understanding": "≤ 3 句话，引用当前 m-ID ...",
+  "offspring": [
+    {"expression": "Div(Sub($close,$open), Add($volume, 1.0))",
+     "evidence_refs": ["m2"],          // 或 [] 表示探索
+     "description": "替换…"}, ...]  // 0..5 个
+}</code></pre>
+<p>对每个子代：<code>parse → validate → evaluate</code>；与当前因子池及本轮已生成的子代去重；记录详情（<code>description</code>、<code>evidence_refs</code>）。</p>
+
+<hr>
+
+<h2>6. 父代替换 <span class="pill">replace_parent()</span></h2>
+<pre><code>index     = parent 在 self.exprs 中的位置
+peers     = pool 中除该 parent 之外的因子
+children  = 唯一且未在 pool 中的子代
+
+diversity(e) = 1 − max_{g∈peers} |ρ(g,e)|          # 未测量 → 1.0
+c_pool(e)    = U(peers + [e]) − U(pool)           # parent 自身为 0
+
+weights      = [α, β, γ, cost_weight]              # 原始值，不做 min-max
+rows[m]      = [|R(m)|, c_pool(m), diversity(m), 1−cost(m)]
+scores       = rows @ weights
+
+# ── 门控 ──
+correlation_ok = True                            # parent
+               = 1 − row[2] ≤ correlation_threshold   # 子代
+credit_ok      = True                              # parent
+               = c_pool(kid) > 1e-6                     # 子代
+
+# ── 等价分组 ──
+# 有限掩码相同且排序在 1e-6 内相等（或整体反向）
+# 每组保留复杂度最低的 AST（并列时：先按提议顺序，parent 优先）
+representatives = sorted(allowed, by complexity) → 每等价类的首个
+
+parent_rep = 代表成员与 parent 等价的那个
+best       = score 最大的代表（并列：节点数更少、index 更小）
+selected   = best if scores[best] > scores[parent_rep] else parent_rep
+winner     = members[selected]  (若为 None → 保留 parent)
+
+# 写入：
+self.exprs[index] = winner  if winner is not None
+decision = {parent, parent_score, parent_group_score, reason,
+            child, candidates:[{expression, reward, complexity, max_correlation,
+                                pool_credit, cost, signal_distance, score,
+                                correlation_ok, credit_ok, representative, eligible}</code></pre>
+
+<p>原因按优先级排列：<code>score_improvement</code> → <code>equivalent_simplification</code> → <code>no_score_improvement</code> → <code>correlation_threshold</code> → <code>pool_credit_threshold</code> → <code>no_new_offspring</code>。</p>
+
+<p>决策会追加到 <code>memory[chain_id]</code> 与 <code>lineage</code>；若子代胜出，则获得新的 <code>factor_id</code> 并继承父代的 <code>chain_id</code>，因此每个种子的完整世系在所有轮次中都可追溯。</p>
+
+<h3>6.1 打分函数 <code>S(f|P) = α·|R| + β·C_pool + γ·D + λ·(1−cost)</code></h3>
+<table>
+<thead><tr><th>组成</th><th>默认值</th><th>取值范围</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><code>|R(f)|</code></td><td>α=50</td><td>[0,1]</td><td>完整 Train 上的绝对值带符号 RankIC</td></tr>
+<tr><td><code>C_pool(f|P)</code></td><td>β=800</td><td>ℝ</td><td>用该因子替换 parent 时的 ΔU；带符号</td></tr>
+<tr><td><code>D(f,P) = 1 − max|ρ|</code></td><td>γ=2</td><td>[0,1]</td><td>相对同伴的多样性（不含自身）</td></tr>
+<tr><td><code>1 − C_cost(f)</code></td><td>λ=2</td><td>[0,1]</td><td>换手率代理 = <code>(1 − mean ρ(f_t, f_{t−1})) / 2</code></td></tr>
+</tbody>
+</table>
+<p class="small">各组成均使用自然尺度——<b>不做 min-max 归一化</b>，也不按轮次重新校准；多样性与贡献度始终在 <code>P_{−f}</code> 上评估。</p>
+
+<hr>
+
+<h2>8. 每轮评估 <span class="pill">test()</span></h2>
+<p>每轮结束后，对每个保存的 <code>pool_<step>.json</code>，主进程会以子进程方式启动 <code>run_adaptive_combination.py</code>：</p>
+<pre><code>subprocess.run([sys.executable, "run_adaptive_combination.py",
+    "--expressions_file", pool_<step>.json,
+    "--instruments",  args.instrument,
+    "--train_end_year", "2021",
+    "--label_days",   str(args.horizon),
+    "--cuda",         str(args.cuda),
+    "--seed",         str(args.seed),
+    "--n_factors",    str(args.n_factors),
+    "--chunk_size",   str(args.chunk_size),
+    "--use_weights",  "True",
+    "--metrics_file", metrics.json],
+    cwd=project_root, env=env, check=True)
+
+# 将 {round, dataset, **metrics} 行追加到 data/cf_logs/<run>/res.txt
+history = pd.read_json(res.txt, lines=True)
+plot IC and RET over rounds → adaptive_combination.png (dpi=150)</code></pre>
+<p class="small">硬性要求：JSON 必须包含 <code>"split": "train"</code>，否则 <code>test()</code> 会抛错——Test 时段的因子池不会通过该脚本重新评估。</p>
+
+<h2>9. 日志产物</h2>
+<table>
+<thead><tr><th>路径</th><th>写入时机</th><th>内容</th></tr></thead>
+<tbody>
+<tr><td><code>args.json</code></td><td>启动时</td><td>解析后的 CLI 命名空间</td></tr>
+<tr><td><code>pool_<i>.json</code></td><td>初始化后及每轮结束后</td><td>exprs / weights / metrics / utility / factor_ids / chain_ids / visits</td></tr>
+<tr><td><code>memory.json</code></td><td>每轮结束后</td><td><code>{chain_id: [{parent, decision}, ...]}</code></td></tr>
+<tr><td><code>lineage.json</code></td><td>每轮结束后</td><td>所有决策的扁平列表：round、parent、child、candidates、reason、ID</td></tr>
+<tr><td><code>round_<i>.jsonl</code></td><td>每轮（追加）</td><td>事件：<code>factor</code>、<code>invalid</code>、<code>parent_selection</code>、<code>llm_request/response/error</code>、<code>invalid_llm_response</code>、<code>mechanism</code>、<code>invalid_mechanism</code>、<code>understanding</code>、<code>proposal</code>、<code>replacement</code>、<code>update</code>、<code>llm_budget_exhausted</code></td></tr>
+<tr><td><code>res.txt</code></td><td>每次 <code>test()</code> 后</td><td>跨轮次的 JSONL 指标历史</td></tr>
+<tr><td><code>adaptive_combination.png</code></td><td>每次 <code>test()</code> 后</td><td>各轮的 IC 与 RET 曲线</td></tr>
+</tbody>
+</table>
+
+<hr>
+
+<h2>10. 一键调用参考</h2>
+<div class="grid2">
+  <div class="box">
+    <h4>训练</h4>
+<pre><code>python train_cf.py --instrument csi300 \
+    --rounds 10 --seed 0 --cuda 0</code></pre>
+  </div>
+  <div class="box">
+    <h4>仅重测</h4>
+<pre><code>python train_cf.py \
+    --test-only data/cf_logs/<run>/pool_10.json</code></pre>
+    <p class="small">参数从同目录下的 <code>args.json</code> 恢复；<code>--cuda</code> 与 <code>--qlib-path</code> 可被覆盖。</p>
+  </div>
+</div>
+
+<hr>
+
+<h2>11. 结果对比（CSI300 Test，2023-05 → 2026-04）</h2>
+<p class="small">所有方法均通过 <code>run_adaptive_combination.py</code> 在相同的 Train / Test 切分下评估；数据全部取自 <code>result.md</code>。</p>
+<table>
+<thead>
+<tr><th>方法</th><th>IC ↑</th><th>IC_STD ↓</th><th>ICIR ↑</th><th>RIC ↑</th><th>RIC_STD ↓</th><th>RICIR ↑</th><th>RET ↑</th><th>RET_STD ↓</th><th>RETIR ↑</th><th>RET_SR ↑</th><th>RET_MDD ↓</th></tr>
+</thead>
+<tbody>
+<tr><td><b>AlphaCME</b></td>
+  <td class="num best">0.0487</td><td class="num sec">0.1519</td><td class="num best">0.3207</td>
+  <td class="num">0.0479</td><td class="num best">0.1527</td><td class="num best">0.3133</td>
+  <td class="num best">0.1828</td><td class="num">0.0114</td><td class="num best">0.0662</td>
+  <td class="num best">1.0503</td><td class="num best">0.2247</td></tr>
+<tr><td><span class="pill">AlphaPROBE</span></td>
+  <td class="num sec">0.0465</td><td class="num">0.1991</td><td class="num">0.2337</td>
+  <td class="num best">0.0632</td><td class="num">0.2081</td><td class="num">0.3036</td>
+  <td class="num">0.0987</td><td class="num best">0.0096</td><td class="num">0.0425</td>
+  <td class="num">0.6740</td><td class="num">0.2450</td></tr>
+<tr><td><span class="pill">AlphaGen</span></td>
+  <td class="num">0.0379</td><td class="num best">0.1499</td><td class="num sec">0.2527</td>
+  <td class="num">0.0407</td><td class="num">0.1721</td><td class="num">0.2367</td>
+  <td class="num sec">0.1318</td><td class="num">0.0122</td><td class="num sec">0.0447</td>
+  <td class="num sec">0.7094</td><td class="num">0.3071</td></tr>
+<tr><td><span class="pill">AlphaSAGE</span></td>
+  <td class="num">0.0363</td><td class="num">0.1545</td><td class="num">0.2349</td>
+  <td class="num sec">0.0493</td><td class="num sec">0.1602</td><td class="num sec">0.3080</td>
+  <td class="num">0.0940</td><td class="num sec">0.0106</td><td class="num">0.0368</td>
+  <td class="num">0.5845</td><td class="num sec">0.2458</td></tr>
+</tbody>
+</table>
+<p class="legend"><b>加粗</b> = 最优，<u>下划线</u> = 次优。↑/↓ 表示期望方向。AlphaCME 在 11 个指标中赢得 8 个且从未垫底；在 IC_STD 上并列次优。</p>
+
+<div style="margin:14px 0;text-align:center">
+  <img src="profit_curve.png" alt="CSI300 收益曲线" style="max-width:100%;border:1px solid var(--line);border-radius:4px">
+  <p class="small" style="margin:6px 0 0">CSI300 累计收益曲线（2023-05 → 2026-04）。红线 <b>Ours (AlphaCME)</b> 始终位于其它基线之上，期末累计收益约 1.55，远超 CSI300 Index（黑色虚线，约 1.22）。</p>
+</div>
+
+<div class="grid2">
+  <div class="box"><h4>对比最强基线的主要增益</h4>
+    <ul>
+      <li>vs AlphaGen：IC +29%、RET_SR +48%、RET_MDD −27%</li>
+      <li>vs AlphaSAGE：IC +34%、RET_SR +80%、RET_MDD −9%</li>
+      <li>vs AlphaPROBE：RET +85%、RET_SR +56%、RET_MDD −8%</li>
+    </ul>
+  </div>
+  <div class="box"><h4>唯一权衡</h4>
+    <ul>
+      <li>AlphaPROBE 赢得 RIC（+32%）——其因子池保留了更多的原始相关性深度</li>
+      <li>AlphaGen 赢得 IC_STD（−1.3%），但收益 / IR / SR 全面落后</li>
+      <li>AlphaCME 在收益 / IR / SR 指标上占优，且风险持平或更优</li>
+    </ul>
+  </div>
+</div>
+
+<hr>
+<p class="small">源文件：<code>train_cf.py</code>、<code>src/alpha_cf/trainer.py</code>、<code>src/alpha_cf/alpha_pool.py</code>、<code>src/alpha_cf/prompt.py</code>、<code>src/alpha_cf/expression.py</code>、<code>run_adaptive_combination.py</code>。指标来自 <code>result.md</code>。</p>
+
+</div>
+</body>
+</html>

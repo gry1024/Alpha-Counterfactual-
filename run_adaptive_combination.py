@@ -324,9 +324,12 @@ def run(args):
     test_start_time = '2023-05-01'
     test_end_time = '2026-04-30'
 
+    alpha158 = False
     if args.expressions_file.endswith(".json"):
         with open(args.expressions_file, encoding="utf-8") as f:
-            benchmark = json.load(f).get("benchmark")
+            manifest = json.load(f)
+            benchmark = manifest.get("benchmark")
+            alpha158 = manifest.get("feature_set") == "Alpha158"
         if benchmark:
             data_index = StockData(instrument=[benchmark], start_time=test_start_time,
                                    end_time=test_end_time, qlib_path=QLIB_PATH, device=device)
@@ -344,6 +347,10 @@ def run(args):
             print(pd.DataFrame([metrics], index=["Test"]).to_string())
             return
 
+    if alpha158:
+        import qlib
+        qlib.init(provider_uri=QLIB_PATH, region="us" if args.instruments == "sp500" else "cn", kernels=1)
+        StockData._qlib_initialized = True
     all_end = max(valid_end_time, test_end_time)
     data_all = StockData(instrument=args.instruments,
                          start_time='2015-01-01',
@@ -367,8 +374,15 @@ def run(args):
 
     # 2. Load expressions and convert to tensor
     print(f"Loading expressions from {args.expressions_file}...")
-    expressions, weights = load_alpha_pool_by_path(args.expressions_file)
-    print(f"Loaded {len(expressions)} expressions.")
+    if alpha158:
+        if args.use_weights:
+            raise ValueError("Alpha158 uses historical OLS; do not enable --use_weights")
+        from alpha158.features import load_tensor
+        fct_tensor = load_tensor(data_all)
+        print(f"Loaded {fct_tensor.shape[-1]} official Alpha158 features.")
+    else:
+        expressions, weights = load_alpha_pool_by_path(args.expressions_file)
+        print(f"Loaded {len(expressions)} expressions.")
 
     if args.use_weights:
         data_test = StockData(instrument=args.instruments,
@@ -405,7 +419,8 @@ def run(args):
         print("="*50)
         
     else:
-        fct_tensor = exprs2tensor(expressions, data_all, normalize=True)
+        if not alpha158:
+            fct_tensor = exprs2tensor(expressions, data_all, normalize=True)
         tgt_tensor = exprs2tensor([target], data_all, normalize=False)
         # 1-day return target aligned to the same data_all window/date axis as tgt_tensor.
         ret_tgt_tensor = exprs2tensor([return_target], data_all, normalize=False)

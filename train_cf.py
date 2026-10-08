@@ -77,7 +77,8 @@ def test(args, source):
 
 
 def train(args):
-    log_dir = Path("data/cf_logs") / f"{datetime.now():%Y%m%d_%H%M%S_%f}_{args.instrument}_{args.seed}"
+    model_name = os.environ.get("OPENAI_MODEL_NAME", "unknown").replace("/", "_").replace("\\", "_")
+    log_dir = Path("data/cf_logs") / f"{datetime.now():%Y%m%d_%H%M%S_%f}_{args.instrument}_{args.seed}_{model_name}"
     log_dir.mkdir(parents=True)
     save_json(log_dir / "args.json", vars(args))
     print(f"Logs: {log_dir}", flush=True)
@@ -98,7 +99,7 @@ def main():
     parser.add_argument("--qlib-path")
     parser.add_argument("--start-pool", default="start_pool.json")
     parser.add_argument("--test-only", metavar="FINAL_JSON")
-    for name, default in dict(seed=0, cuda=0, rounds=10, parents=10,
+    for name, default in dict(seed=0, cuda=0, rounds=10, parents=5,
                               pool_capacity=50, horizon=20,
                               max_nodes=60, max_depth=10, max_backtrack=100, chunk_size=64,
                               llm_timeout=180, n_factors=20, diagnosis_workers=5).items():
@@ -126,8 +127,6 @@ def main():
     args.qlib_path = str(Path(args.qlib_path or os.environ.get(env_key) or default).resolve())
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    if args.rounds and not source and os.environ.get("OPENAI_MODEL_NAME", "").lower() != "minimax-m3":
-        parser.error("Set OPENAI_MODEL_NAME=MiniMax-M3 in .env")
     if args.test_only:
         test(args, Path(args.test_only).resolve())
     else:

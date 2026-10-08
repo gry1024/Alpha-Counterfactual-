@@ -68,6 +68,8 @@ AlphaCME reads `data/qlib_data/cn_data_rolling` (CN) and `data/qlib_data/us_data
 python train_cf.py --instrument csi300 --rounds 10
 ```
 
+Logs are saved under `data/cf_logs/<timestamp>_<instrument>_<seed>_<model_name>`, using `OPENAI_MODEL_NAME`; `/` and `\` in model names become `_`.
+
 #### Factor Combination
 
 The final round's `pool_<rounds>.json` is forwarded to `run_adaptive_combination.py`:
