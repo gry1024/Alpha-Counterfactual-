@@ -341,18 +341,10 @@ plot IC and RET over rounds → adaptive_combination.png (dpi=150)</code></pre>
 <hr>
 
 <h2>10. 一键调用参考</h2>
-<div class="grid2">
-  <div class="box">
-    <h4>训练</h4>
+<div class="box">
+  <h4>训练</h4>
 <pre><code>python train_cf.py --instrument csi300 \
     --rounds 10 --seed 0 --cuda 0</code></pre>
-  </div>
-  <div class="box">
-    <h4>仅重测</h4>
-<pre><code>python train_cf.py \
-    --test-only data/cf_logs/<run>/pool_10.json</code></pre>
-    <p class="small">参数从同目录下的 <code>args.json</code> 恢复；<code>--cuda</code> 与 <code>--qlib-path</code> 可被覆盖。</p>
-  </div>
 </div>
 
 <hr>
