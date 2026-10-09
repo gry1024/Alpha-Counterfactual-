@@ -102,7 +102,7 @@ def main():
     for name, default in dict(seed=0, cuda=0, rounds=10, parents=5,
                               pool_capacity=50, horizon=20,
                               max_nodes=60, max_depth=10, max_backtrack=100, chunk_size=64,
-                              llm_timeout=180, n_factors=20, diagnosis_workers=5).items():
+                              llm_timeout=600, llm_attempts=5, llm_retry_wait=5, n_factors=20, diagnosis_workers=5).items():
         parser.add_argument("--" + name.replace("_", "-"), type=int, default=default, dest=name)
     for name, default in dict(alpha=50.0, beta=800.0, gamma=2, cost_weight=2, temperature=0.5, correlation_threshold=0.8).items():
         parser.add_argument("--" + name.replace("_", "-"), type=float, default=default, dest=name)
@@ -116,7 +116,7 @@ def main():
         config.update(cuda=args.cuda, test_only=args.test_only, qlib_path=args.qlib_path)
         args = argparse.Namespace(**{k: config.get(k, v) for k, v in vars(args).items()})
     if args.rounds < 0 or min(args.parents,
-            args.pool_capacity, args.horizon, args.chunk_size, args.n_factors, args.diagnosis_workers, args.llm_timeout) < 1:
+            args.pool_capacity, args.horizon, args.chunk_size, args.n_factors, args.diagnosis_workers, args.llm_timeout, args.llm_attempts, args.llm_retry_wait) < 1:
         parser.error("Invalid counts")
     if not 0 <= args.correlation_threshold <= 1:
         parser.error("correlation-threshold must be between 0 and 1")

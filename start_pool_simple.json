@@ -1,0 +1,307 @@
+{
+  "exprs": [
+    "Sub(Div($close,Ref($close,10)),1.0)",
+    "Sub(Div($close,Ref($close,20)),1.0)",
+    "Sub(Div($close,Ref($close,60)),1.0)",
+    "Sub(Div(Ref($close,5),Ref($close,60)),1.0)",
+    "Sub(Div(TsMean($close,5),TsMean($close,20)),1.0)",
+    "Sub(Div(TsEMA($close,12),TsEMA($close,26)),1.0)",
+    "Div(TsMean(Sub(Div($close,Ref($close,1)),1.0),20),Add(TsStd(Sub(Div($close,Ref($close,1)),1.0),20),0.000001))",
+    "Div(TsSum(Sub(Div($close,Ref($close,1)),1.0),20),Add(TsSum(Abs(Sub(Div($close,Ref($close,1)),1.0)),20),0.000001))",
+    "Sub(Div($close,Ref($close,1)),1.0)",
+    "Sub(Div($close,Ref($close,5)),1.0)",
+    "Sub(Div($close,TsMean($close,20)),1.0)",
+    "Div(Sub($close,TsMean($close,20)),Add(TsStd($close,20),0.000001))",
+    "Div(Sub($close,TsMin($low,20)),Add(Sub(TsMax($high,20),TsMin($low,20)),0.000001))",
+    "TsRank($close,20)",
+    "Sub(Div($close,TsMax($high,60)),1.0)",
+    "TsStd(Sub(Div($close,Ref($close,1)),1.0),20)",
+    "Pow(TsMean(Pow(GetGreater(Sub(0.0,Sub(Div($close,Ref($close,1)),1.0)),0.0),2.0),20),0.5)",
+    "Div(TsMean(Pow(GetGreater(Sub(Div($close,Ref($close,1)),1.0),0.0),2.0),20),Add(TsMean(Pow(GetGreater(Sub(0.0,Sub(Div($close,Ref($close,1)),1.0)),0.0),2.0),20),0.000001))",
+    "TsMean(Abs(Sub(Div($close,Ref($close,1)),1.0)),20)",
+    "TsSkew(Sub(Div($close,Ref($close,1)),1.0),20)",
+    "TsKurt(Sub(Div($close,Ref($close,1)),1.0),20)",
+    "Div(TsMean(Pow(Log(Div($high,$low)),2.0),20),2.772588722239781)",
+    "Div(TsMean(GetGreater(Sub($high,$low),GetGreater(Abs(Sub($high,Ref($close,1))),Abs(Sub($low,Ref($close,1))))),14),$close)",
+    "Div($volume,Add(TsMean($volume,20),0.000001))",
+    "Sub(Div(TsMean($volume,5),Add(TsMean($volume,20),0.000001)),1.0)",
+    "Div(TsStd($volume,20),Add(TsMean($volume,20),0.000001))",
+    "TsRank($volume,20)",
+    "Sub(Div($volume,Add(Ref($volume,5),0.000001)),1.0)",
+    "TsSkew($volume,20)",
+    "Div(Mul($close,$volume),Add(TsMean(Mul($close,$volume),20),0.000001))",
+    "TsCorr($close,Log(Add($volume,1.0)),20)",
+    "TsCorr(Sub(Div($close,Ref($close,1)),1.0),Log(Div(Add($volume,1.0),Add(Ref($volume,1),1.0))),20)",
+    "TsCorr(Abs(Sub(Div($close,Ref($close,1)),1.0)),$volume,20)",
+    "TsCorr(Div(Sub($high,$low),$close),$volume,20)",
+    "Div(TsSum(Mul(Sub(Div($close,Ref($close,1)),1.0),$volume),20),Add(TsSum($volume,20),0.000001))",
+    "Div(TsSum(Mul(Sign(Sub(Div($close,Ref($close,1)),1.0)),$volume),20),Add(TsSum($volume,20),0.000001))",
+    "TsMean(Div(Abs(Sub(Div($close,Ref($close,1)),1.0)),Add(Mul($close,$volume),0.000001)),20)",
+    "Sub(Div($vwap,$close),1.0)",
+    "Sub(Div(TsSum(Mul($close,$volume),20),Add(Mul($close,TsSum($volume,20)),0.000001)),1.0)",
+    "Div(TsSum(Mul(Div(Sub(Sub(Mul(2.0,$close),$high),$low),Add(Sub($high,$low),0.000001)),$volume),20),Add(TsSum($volume,20),0.000001))",
+    "Div(TsSum(Mul(Sign(Sub($vwap,Ref($vwap,1))),Mul($vwap,$volume)),14),Add(TsSum(Mul($vwap,$volume),14),0.000001))",
+    "TsCorr(Sub(Div($close,Ref($close,1)),1.0),Ref(Sub(Div($close,Ref($close,1)),1.0),1),20)",
+    "Div(Sub($close,$open),$open)",
+    "Sub(Div($open,Ref($close,1)),1.0)",
+    "Div(Sub($high,$low),$open)",
+    "Div(Sub($close,$open),Add(Sub($high,$low),0.000001))",
+    "Div(Sub($high,GetGreater($open,$close)),Add(Sub($high,$low),0.000001))",
+    "Div(Sub(GetLess($open,$close),$low),Add(Sub($high,$low),0.000001))",
+    "Div(Sub(Sub(Mul(2.0,$close),$high),$low),Add(Sub($high,$low),0.000001))",
+    "Mul(Sub(Div($open,Ref($close,1)),1.0),Div(Sub($close,$open),$open))"
+  ],
+  "description": "Fixed classic OHLCV seed pool; 50 interpretable formulas across 7 economic families. No return-based selection. Multi-horizon variants are intentional; economic diversity does not guarantee low empirical correlation.",
+  "factors": [
+    {
+      "group": "momentum_trend",
+      "name": "roc_10",
+      "expression": "Sub(Div($close,Ref($close,10)),1.0)"
+    },
+    {
+      "group": "momentum_trend",
+      "name": "roc_20",
+      "expression": "Sub(Div($close,Ref($close,20)),1.0)"
+    },
+    {
+      "group": "momentum_trend",
+      "name": "roc_60",
+      "expression": "Sub(Div($close,Ref($close,60)),1.0)"
+    },
+    {
+      "group": "momentum_trend",
+      "name": "skip_recent_momentum_5_60",
+      "expression": "Sub(Div(Ref($close,5),Ref($close,60)),1.0)"
+    },
+    {
+      "group": "momentum_trend",
+      "name": "ma_spread_5_20",
+      "expression": "Sub(Div(TsMean($close,5),TsMean($close,20)),1.0)"
+    },
+    {
+      "group": "momentum_trend",
+      "name": "ema_spread_12_26",
+      "expression": "Sub(Div(TsEMA($close,12),TsEMA($close,26)),1.0)"
+    },
+    {
+      "group": "momentum_trend",
+      "name": "return_ir_20",
+      "expression": "Div(TsMean(Sub(Div($close,Ref($close,1)),1.0),20),Add(TsStd(Sub(Div($close,Ref($close,1)),1.0),20),0.000001))"
+    },
+    {
+      "group": "momentum_trend",
+      "name": "signed_return_balance_20",
+      "expression": "Div(TsSum(Sub(Div($close,Ref($close,1)),1.0),20),Add(TsSum(Abs(Sub(Div($close,Ref($close,1)),1.0)),20),0.000001))"
+    },
+    {
+      "group": "reversal_position",
+      "name": "daily_return",
+      "expression": "Sub(Div($close,Ref($close,1)),1.0)"
+    },
+    {
+      "group": "reversal_position",
+      "name": "short_return_5",
+      "expression": "Sub(Div($close,Ref($close,5)),1.0)"
+    },
+    {
+      "group": "reversal_position",
+      "name": "price_ma_deviation_20",
+      "expression": "Sub(Div($close,TsMean($close,20)),1.0)"
+    },
+    {
+      "group": "reversal_position",
+      "name": "bollinger_zscore_20",
+      "expression": "Div(Sub($close,TsMean($close,20)),Add(TsStd($close,20),0.000001))"
+    },
+    {
+      "group": "reversal_position",
+      "name": "stochastic_position_20",
+      "expression": "Div(Sub($close,TsMin($low,20)),Add(Sub(TsMax($high,20),TsMin($low,20)),0.000001))"
+    },
+    {
+      "group": "reversal_position",
+      "name": "price_time_rank_20",
+      "expression": "TsRank($close,20)"
+    },
+    {
+      "group": "reversal_position",
+      "name": "drawdown_from_high_60",
+      "expression": "Sub(Div($close,TsMax($high,60)),1.0)"
+    },
+    {
+      "group": "volatility_distribution",
+      "name": "return_volatility_20",
+      "expression": "TsStd(Sub(Div($close,Ref($close,1)),1.0),20)"
+    },
+    {
+      "group": "volatility_distribution",
+      "name": "downside_semideviation_20",
+      "expression": "Pow(TsMean(Pow(GetGreater(Sub(0.0,Sub(Div($close,Ref($close,1)),1.0)),0.0),2.0),20),0.5)"
+    },
+    {
+      "group": "volatility_distribution",
+      "name": "up_down_energy_ratio_20",
+      "expression": "Div(TsMean(Pow(GetGreater(Sub(Div($close,Ref($close,1)),1.0),0.0),2.0),20),Add(TsMean(Pow(GetGreater(Sub(0.0,Sub(Div($close,Ref($close,1)),1.0)),0.0),2.0),20),0.000001))"
+    },
+    {
+      "group": "volatility_distribution",
+      "name": "mean_absolute_return_20",
+      "expression": "TsMean(Abs(Sub(Div($close,Ref($close,1)),1.0)),20)"
+    },
+    {
+      "group": "volatility_distribution",
+      "name": "return_skewness_20",
+      "expression": "TsSkew(Sub(Div($close,Ref($close,1)),1.0),20)"
+    },
+    {
+      "group": "volatility_distribution",
+      "name": "return_kurtosis_20",
+      "expression": "TsKurt(Sub(Div($close,Ref($close,1)),1.0),20)"
+    },
+    {
+      "group": "volatility_distribution",
+      "name": "parkinson_range_variance_20",
+      "expression": "Div(TsMean(Pow(Log(Div($high,$low)),2.0),20),2.772588722239781)"
+    },
+    {
+      "group": "volatility_distribution",
+      "name": "normalized_atr_14",
+      "expression": "Div(TsMean(GetGreater(Sub($high,$low),GetGreater(Abs(Sub($high,Ref($close,1))),Abs(Sub($low,Ref($close,1))))),14),$close)"
+    },
+    {
+      "group": "volume_activity",
+      "name": "relative_volume_20",
+      "expression": "Div($volume,Add(TsMean($volume,20),0.000001))"
+    },
+    {
+      "group": "volume_activity",
+      "name": "volume_ma_spread_5_20",
+      "expression": "Sub(Div(TsMean($volume,5),Add(TsMean($volume,20),0.000001)),1.0)"
+    },
+    {
+      "group": "volume_activity",
+      "name": "volume_coefficient_variation_20",
+      "expression": "Div(TsStd($volume,20),Add(TsMean($volume,20),0.000001))"
+    },
+    {
+      "group": "volume_activity",
+      "name": "volume_time_rank_20",
+      "expression": "TsRank($volume,20)"
+    },
+    {
+      "group": "volume_activity",
+      "name": "volume_growth_5",
+      "expression": "Sub(Div($volume,Add(Ref($volume,5),0.000001)),1.0)"
+    },
+    {
+      "group": "volume_activity",
+      "name": "volume_skewness_20",
+      "expression": "TsSkew($volume,20)"
+    },
+    {
+      "group": "volume_activity",
+      "name": "relative_dollar_volume_20",
+      "expression": "Div(Mul($close,$volume),Add(TsMean(Mul($close,$volume),20),0.000001))"
+    },
+    {
+      "group": "price_volume_relation",
+      "name": "price_logvolume_correlation_20",
+      "expression": "TsCorr($close,Log(Add($volume,1.0)),20)"
+    },
+    {
+      "group": "price_volume_relation",
+      "name": "return_volume_change_correlation_20",
+      "expression": "TsCorr(Sub(Div($close,Ref($close,1)),1.0),Log(Div(Add($volume,1.0),Add(Ref($volume,1),1.0))),20)"
+    },
+    {
+      "group": "price_volume_relation",
+      "name": "abs_return_volume_correlation_20",
+      "expression": "TsCorr(Abs(Sub(Div($close,Ref($close,1)),1.0)),$volume,20)"
+    },
+    {
+      "group": "price_volume_relation",
+      "name": "range_volume_correlation_20",
+      "expression": "TsCorr(Div(Sub($high,$low),$close),$volume,20)"
+    },
+    {
+      "group": "price_volume_relation",
+      "name": "volume_weighted_return_20",
+      "expression": "Div(TsSum(Mul(Sub(Div($close,Ref($close,1)),1.0),$volume),20),Add(TsSum($volume,20),0.000001))"
+    },
+    {
+      "group": "price_volume_relation",
+      "name": "obv_balance_20",
+      "expression": "Div(TsSum(Mul(Sign(Sub(Div($close,Ref($close,1)),1.0)),$volume),20),Add(TsSum($volume,20),0.000001))"
+    },
+    {
+      "group": "liquidity_execution",
+      "name": "amihud_illiquidity_20",
+      "expression": "TsMean(Div(Abs(Sub(Div($close,Ref($close,1)),1.0)),Add(Mul($close,$volume),0.000001)),20)"
+    },
+    {
+      "group": "liquidity_execution",
+      "name": "vwap_close_gap",
+      "expression": "Sub(Div($vwap,$close),1.0)"
+    },
+    {
+      "group": "liquidity_execution",
+      "name": "volume_weighted_price_gap_20",
+      "expression": "Sub(Div(TsSum(Mul($close,$volume),20),Add(Mul($close,TsSum($volume,20)),0.000001)),1.0)"
+    },
+    {
+      "group": "liquidity_execution",
+      "name": "chaikin_money_flow_20",
+      "expression": "Div(TsSum(Mul(Div(Sub(Sub(Mul(2.0,$close),$high),$low),Add(Sub($high,$low),0.000001)),$volume),20),Add(TsSum($volume,20),0.000001))"
+    },
+    {
+      "group": "liquidity_execution",
+      "name": "money_flow_balance_14",
+      "expression": "Div(TsSum(Mul(Sign(Sub($vwap,Ref($vwap,1))),Mul($vwap,$volume)),14),Add(TsSum(Mul($vwap,$volume),14),0.000001))"
+    },
+    {
+      "group": "liquidity_execution",
+      "name": "return_autocorrelation_20",
+      "expression": "TsCorr(Sub(Div($close,Ref($close,1)),1.0),Ref(Sub(Div($close,Ref($close,1)),1.0),1),20)"
+    },
+    {
+      "group": "candlestick_gap",
+      "name": "intraday_return",
+      "expression": "Div(Sub($close,$open),$open)"
+    },
+    {
+      "group": "candlestick_gap",
+      "name": "overnight_gap",
+      "expression": "Sub(Div($open,Ref($close,1)),1.0)"
+    },
+    {
+      "group": "candlestick_gap",
+      "name": "normalized_daily_range",
+      "expression": "Div(Sub($high,$low),$open)"
+    },
+    {
+      "group": "candlestick_gap",
+      "name": "candle_body_fraction",
+      "expression": "Div(Sub($close,$open),Add(Sub($high,$low),0.000001))"
+    },
+    {
+      "group": "candlestick_gap",
+      "name": "upper_shadow_fraction",
+      "expression": "Div(Sub($high,GetGreater($open,$close)),Add(Sub($high,$low),0.000001))"
+    },
+    {
+      "group": "candlestick_gap",
+      "name": "lower_shadow_fraction",
+      "expression": "Div(Sub(GetLess($open,$close),$low),Add(Sub($high,$low),0.000001))"
+    },
+    {
+      "group": "candlestick_gap",
+      "name": "close_location_value",
+      "expression": "Div(Sub(Sub(Mul(2.0,$close),$high),$low),Add(Sub($high,$low),0.000001))"
+    },
+    {
+      "group": "candlestick_gap",
+      "name": "gap_reversal_interaction",
+      "expression": "Mul(Sub(Div($open,Ref($close,1)),1.0),Div(Sub($close,$open),$open))"
+    }
+  ]
+}

@@ -14,6 +14,10 @@ from .expression import ablate, at, complexity, parse, walk
 from .prompt import PROMPT_HEAD, PROMPT_FEATURES_AND_OPERATORS, PROMPT_DIAGNOSIS, PROMPT_EVOLUTION
 
 
+class LLMUnavailable(RuntimeError):
+    """Transient API failures exhausted the configured attempts."""
+
+
 def save_json(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
 
@@ -47,18 +51,15 @@ class AlphaCFTrainer:
         log_context = dict(task="diagnosis" if prompt == PROMPT_DIAGNOSIS else "evolution",
                            factor=factor if isinstance(factor, str) else factor["expression"])
         error = ""
-        deadline = time.monotonic() + 3 * self.args.llm_timeout
-        for attempt in range(1, 4):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                self.record("llm_budget_exhausted", attempt=attempt, **log_context)
-                raise TimeoutError("LLM retry budget exhausted")
+        attempts = self.args.llm_attempts
+        for attempt in range(1, attempts + 1):
             user_prompt = base_prompt + (f"\nPrevious response failed validation: {error}\n"
                 "Correct that error. Return only a valid JSON object matching the required schema, "
                 "without control characters or thinking text." if error else "")
-            timeout = min(self.args.llm_timeout, remaining)
+            timeout = self.args.llm_timeout * min(attempt, 2)
             self.record("llm_request", attempt=attempt, **log_context, started_at=time.time(),
-                        timeout_seconds=timeout, system_prompt=PROMPT_HEAD, user_prompt=user_prompt)
+                        timeout_seconds=timeout, prompt_chars=len(PROMPT_HEAD) + len(user_prompt),
+                        system_prompt=PROMPT_HEAD, user_prompt=user_prompt)
             started = time.monotonic()
             try:
                 response = self.client.chat.completions.create(model=self.model,
@@ -69,10 +70,22 @@ class AlphaCFTrainer:
                 label = type(exc).__name__ + (f" (HTTP {exc.status_code})" if isinstance(exc, APIStatusError) else "")
                 self.record("llm_error", attempt=attempt, **log_context, error=label,
                             retryable=retryable, elapsed_seconds=time.monotonic() - started)
-                print(f"  LLM request failed (attempt {attempt}/3): {label}", flush=True)
-                if attempt == 3 or not retryable:
+                print(f"  LLM request failed (attempt {attempt}/{attempts}, timeout={timeout}s): {label}", flush=True)
+                if not retryable:
                     raise
-                time.sleep(min(2, max(0, deadline - time.monotonic())))
+                if attempt == attempts:
+                    raise LLMUnavailable(f"{label} after {attempts} attempts") from exc
+                delay = min(self.args.llm_retry_wait * 2 ** (attempt - 1), 60)
+                # Respect provider cooldowns, bounded to avoid an unbounded stall.
+                if isinstance(exc, APIStatusError):
+                    try:
+                        delay = max(delay, min(float(exc.response.headers.get("retry-after", 0)), 300))
+                    except ValueError:
+                        pass
+                delay += random.SystemRandom().uniform(0, min(delay * 0.2, 5))
+                self.record("llm_retry", attempt=attempt, **log_context, wait_seconds=delay)
+                print(f"  Retrying in {delay:.1f}s", flush=True)
+                time.sleep(delay)
                 continue
             text, finish_reason = response.choices[0].message.content, response.choices[0].finish_reason
             self.record("llm_response", attempt=attempt, **log_context,
@@ -111,8 +124,8 @@ class AlphaCFTrainer:
             except ValueError as exc:
                 error = str(exc)
                 self.record("invalid_llm_response", attempt=attempt, **log_context, error=error)
-                print(f"  Invalid LLM response (attempt {attempt}/3): {exc}", flush=True)
-                if attempt == 3:
+                print(f"  Invalid LLM response (attempt {attempt}/{attempts}): {exc}", flush=True)
+                if attempt == attempts:
                     raise
 
     def evaluate(self, text):
@@ -301,11 +314,22 @@ class AlphaCFTrainer:
                 requests = [executor.submit(self.ask, PROMPT_DIAGNOSIS, context) for context in contexts]
                 for i, (parent, request) in enumerate(zip(parents, requests), 1):
                     print(f"[Diagnosis {i}/{len(parents)}]", flush=True)
-                    evidence.append(self.diagnose(parent, utility, request.result()))
+                    try:
+                        diagnosis = request.result()
+                    except LLMUnavailable as exc:
+                        self.record("llm_parent_skipped", task="diagnosis", factor=str(parent), error=str(exc))
+                        print(f"  Skip parent diagnosis; retained {parent}: {exc}", flush=True)
+                        continue
+                    evidence.append((parent, self.diagnose(parent, utility, diagnosis)))
             previous_children, added = [], []
-            for i, (parent_expr, parent) in enumerate(zip(parents, evidence), 1):
-                print(f"[Evolution {i}/{len(parents)}]", flush=True)
-                children, details = self.evolve(parent, previous_children)
+            for i, (parent_expr, parent) in enumerate(evidence, 1):
+                print(f"[Evolution {i}/{len(evidence)}]", flush=True)
+                try:
+                    children, details = self.evolve(parent, previous_children)
+                except LLMUnavailable as exc:
+                    self.record("llm_parent_skipped", task="evolution", factor=str(parent_expr), error=str(exc))
+                    print(f"  Skip parent evolution; retained {parent_expr}: {exc}", flush=True)
+                    continue
                 previous_children.extend(str(child) for child in children)
                 decision = self.pool.replace_parent(parent_expr, children)
                 print(f"> Parent score: S={decision['parent_score']:.6f}, "

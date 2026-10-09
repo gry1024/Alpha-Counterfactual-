@@ -24,7 +24,9 @@ idea、plans 与 `src/alpha_cf/` 使用同一协议：
 | --alpha / --beta / --gamma / --cost-weight | 50 / 500 / 2 / 2 | 固定自然尺度系数，原始系数不要求和为 1 |
 | --temperature | 0.5 | LLM 温度 |
 | --n-factors | 20 | 原回测脚本每天最多选取因子数 |
-| --llm-timeout | 180 | 单次 SDK timeout；ask 重试预算为 3 倍 timeout，默认 540s |
+| --llm-timeout | 600 | 首次 SDK timeout（秒）；后续尝试为两倍 |
+| --llm-attempts | 5 | 网络重试与响应纠错的最大请求次数 |
+| --llm-retry-wait | 5 | 指数退避初始等待秒数，基础上限 60 秒，另加抖动；尊重数值 Retry-After（上限 300 秒） |
 
 pool_credit 门槛固定为 1e-6，严格大于，无新增参数。父代低贡献集合由删除贡献 U(P)-U(P去掉成员) 排名后半池确定；名额为奇数时随机部分多一个，最终顺序打乱。
 机制数和子代数均没有命令行参数。机制数由 LLM 依复杂度选择，不超过 5；
