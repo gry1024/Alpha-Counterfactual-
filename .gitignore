@@ -219,6 +219,14 @@ run.sh
 run_grid_search.sh
 grid_search_config.py
 
+
+# paper
+papers/
+manuscript/
+tmp/
+output/
+tests/
+
 # md
 
 AGENT.md
@@ -228,3 +236,10 @@ analysis/
 result.md
 profit_curve.png
 profit_curve.png
+LLM_PROMPTS_中文审阅.md
+profit_curve_csi1000.pdf
+profit_curve_csi500.pdf
+profit_curve_csi300.pdf
+profit_curve_csi1000.png
+profit_curve_csi500.png
+profit_curve_csi300.png

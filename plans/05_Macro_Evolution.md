@@ -19,13 +19,13 @@ signal_distance 使用覆盖修正的完整排名相关距离 [0,1]；等价分�
 
 示例长度仅为展示；实际允许 0–5 个对象。没有值得尝试的改进时返回
 `{"updated_understanding": "证据更新或仍未解决的问题", "offspring": []}`，直接保留 parent，照常记录理解、retained 与演化路径。
-每个对象包含非空字符串 expression 和 description，以及 evidence_refs 列表。引用只允许本次成功诊断的 id（失败项不可引用），允许引用负证据；无直接当前机制依据时使用 [] 并标明探索，历史依据在描述中说明。description 用 1–2 句话把 updated_understanding 连接到修改与待验证假设，说明
+每个对象包含非空字符串 expression 和 description，以及 evidence_refs 列表。引用只允许本次成功反事实推理的 id（失败项不可引用），允许引用负证据；无直接当前机制依据时使用 [] 并标明探索，历史依据在描述中说明。description 用 1–2 句话把 updated_understanding 连接到修改与待验证假设，说明
 依据哪个 mechanism 的哪些证据（delta_cf、pool_credit、signal_distance），
 做了什么修改或探索、为什么。上例只适用于实际证据接近零的情况；
 缺少实测证据时明确说明是探索假设，不编造测量值。不要求操作类型分类。
 现有 ask 检查 JSON、字段类型、非空内容及数量，
 数量只检查不超过 5，空列表合法；直接用已有 OpenAI 兼容客户端，关闭 SDK 自动重试。网络失败与响应纠错共用最多 5 次请求（--llm-attempts）；连接/超时及 HTTP 408/409/429/5xx 使用指数退避，默认从 5 秒开始（--llm-retry-wait），基础等待上限 60 秒并加少量随机抖动。数值 Retry-After 最多等待 300 秒，其余 HTTP 错误立即报错。
-单次 SDK timeout 默认 600 秒（--llm-timeout），第二次及后续请求提高为两倍，保留完整历史 context；每次尝试均获得完整 timeout，不因前面的请求与等待缩短最后一次机会。请求次数有限，单次调用仍受 SDK 超时语义约束。日志包含请求开始时间、timeout、提示词字符数、响应/失败耗时、错误类型及重试等待时间，不记录网络错误响应正文。临时网络错误耗尽后，诊断或演化跳过该 parent 并保留原因子，记录 llm_parent_skipped，其他 parent 与后续轮继续；认证/参数错误和最终响应校验错误仍报错。
+单次 SDK timeout 默认 600 秒（--llm-timeout），第二次及后续请求提高为两倍，保留完整历史 context；每次尝试均获得完整 timeout，不因前面的请求与等待缩短最后一次机会。请求次数有限，单次调用仍受 SDK 超时语义约束。日志包含请求开始时间、timeout、提示词字符数、响应/失败耗时、错误类型及重试等待时间，不记录网络错误响应正文。临时网络错误耗尽后，反事实推理或演化跳过该 parent 并保留原因子，记录 llm_parent_skipped，其他 parent 与后续轮继续；认证/参数错误和最终响应校验错误仍报错。
 每次解码或协议失败，下一次 prompt 加入上一次具体错误（包括 JSON 行列位置），要求修正并返回合规 JSON。
 
 每个返回公式写 proposal（含 parent_id、parent、expression、description、evidence_refs），
@@ -35,7 +35,7 @@ signal_distance 使用覆盖修正的完整排名相关距离 [0,1]；等价分�
 入池者另写 child_description。未入池候选不用于其他 parent 的替换。
 模型返回协议错误沿用报错行为；全部候选无效或无合格候选则正常保留 parent。
 
-默认 LLM 诊断最多 5 路并发，证据在主线程按原顺序测量、基于轮初池完成，然后顺序执行：
+默认 LLM 反事实推理最多 5 路并发，证据在主线程按原顺序测量、基于轮初池完成，然后顺序执行：
 
 ```text
 for parent:
@@ -49,4 +49,6 @@ save()
 后续 parent 的门槛检查使用已经更新的池。
 具体入池标准见 [工作池更新](07_Pool_Update.md)。
 
-终端与既有日志保存 understanding、updated_understanding、机制预测及证据引用；下一轮诊断复用上一轮理解。终端输出 parent、机制/记忆记录数、每个 proposal 的说明与评价结果，以及重复或无效公式的跳过原因。
+终端与既有日志保存 understanding、updated_understanding、机制预测及证据引用；下一轮反事实推理复用上一轮理解。终端输出 parent、机制/记忆记录数、每个 proposal 的说明与评价结果，以及重复或无效公式的跳过原因。
+
+评分提示词注入本次真实权重及门槛状态，使用原始分量加权评分。

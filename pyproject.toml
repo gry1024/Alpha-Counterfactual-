@@ -1,7 +1,7 @@
 [project]
-name = "AlphaSAGE"
+name = "AlphaCREAM"
 version = "0.1.0"
-description = "Default template for PDM package"
+description = "Counterfactual Reasoning and Evidence-Guided Evolution for Alpha Mining"
 dependencies = [
     "numpy>=2.3.2",
     "torch @ https://download.pytorch.org/whl/cu121/torch-2.4.0%2Bcu121-cp311-cp311-linux_x86_64.whl",

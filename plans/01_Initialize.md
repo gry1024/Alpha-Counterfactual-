@@ -4,7 +4,7 @@
 
 ## 1.1 离线构建与直接加载
 
-`start_pool.json` 直接保存最终 50 个精华因子，混合 Alpha158、AlphaSAGE、AlphaPROBE、AlphaGen，每种来源均减少数量。离线方案与实测结果见 [初始池比较](Start_Pool_Comparison.md)。
+`start_pool.json` 直接保存最终 50 个精华因子，混合 Alpha158、AlphaSAGE、AlphaPROBE、AlphaGen，每种来源均减少数量。离线方案与实测结果见 初始池比较。
 
 `plot_profit_curve_start_pool.py`（仓库当前仅余 `__pycache__/*.pyc`，`.py` 源文件已不在工作区，需自行恢复或从历史 commit 取回）比较多种来源配额和去相关强度，先满足经济结构覆盖、同构去重及相关性约束，再按 2022 年验证收益曲线择优。它只回测初始池，不调用 trainer、LLM 或整轮演化，不读取 Test。
 

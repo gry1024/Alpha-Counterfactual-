@@ -1,6 +1,6 @@
 # 03 — 机制证据
 
-实现：`AlphaCFTrainer.diagnose`；
+实现：`AlphaCFTrainer.reason_about`；
 `AlphaCFPool.evaluate/signal_distance/signal_comparison/score_signals/utility/equivalent`。
 
 设 parent=f，反事实=f'，轮初池=P：
@@ -22,12 +22,12 @@ signal_distance 使用完整 Train 上的平均并列秩归一化信号。将信
 
 pool_credit 使用完整 Train（2015–2021）的效用 U；原池与替换池各自拟合带符号 OLS，并在同一完整 Train 上评价，不做内部时间切分。
 
-C_pool = U(P\{parent}∪{candidate}) − U(P)。诊断用轮初池，替换用即时当前池；parent 自身的贡献为 0。日志与快照共用同一效用和权重口径。OLS 统一 dtype/device，缺失曝光取中性 0；无足够样本、非有限系数或求解失败显式报错，不用等权兜底。
+C_pool = U(P\{parent}∪{candidate}) − U(P)。反事实推理用轮初池，替换用即时当前池；parent 自身的贡献为 0。日志与快照共用同一效用和权重口径。OLS 统一 dtype/device，缺失曝光取中性 0；无足够样本、非有限系数或求解失败显式报错，不用等权兜底。
 单因子 R 在全部标签有效日期上平均；因子恒定、缺失或无法计算的 IC 按 0 计入，完全没有有效 IC 的因子拒绝。标签有效指至少两个有限值且截面非恒定。
 
-代码、文档和 LLM prompt 均使用上述定义：delta_cf 的正值表示个体预测力度改善，pool_credit 的正值表示组合改善。负向诊断仍是有效证据，不因符号被过滤。终端逐机制打印编号、路径、描述、假设/预测、编辑公式和全部实测指标；消融禁用的指标显示 `unmeasured`。
+代码、文档和 LLM prompt 均使用上述定义：delta_cf 的正值表示个体预测力度改善，pool_credit 的正值表示组合改善。负向反事实推理仍是有效证据，不因符号被过滤。终端逐机制打印编号、路径、描述、假设/预测、编辑公式和全部实测指标；消融禁用的指标显示 `unmeasured`。
 
 不根据两项 credit 的符号生成处置分类，LLM 自主理解收益、冗余和组合之间的权衡。
-`--no-pool-credit` 仅使诊断 pool_credit=null，仍测量其余证据；更新时 pool_credit > 1e-6 的硬门槛仍执行。
+`--no-pool-credit` 仅使反事实推理 pool_credit=null，仍测量其余证据；更新时 pool_credit > 1e-6 的硬门槛仍执行。
 `--no-cf-evidence` 使全部证据为 null。
 null 表示未测量，不能当成零贡献。

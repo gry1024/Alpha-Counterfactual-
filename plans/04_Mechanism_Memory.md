@@ -1,6 +1,6 @@
 # 04 — 机制记忆与路径
 
-实现：`AlphaCFTrainer.memory/diagnose/evolve/save/train`。
+实现：`AlphaCFTrainer.memory/reason_about/evolve/save/train`。
 
 ## 独立演化链
 
@@ -23,7 +23,7 @@ factor ID 与公式继承同一 chain ID；保留时也继续同一链，不跨�
 
 每次 `evolve` 直接传入该链按发生顺序保存的全部此前历史，不按公式过滤、不截断。
 本轮证据在 `parent.mechanisms` 中提供，决定完成后才追加到 memory，避免重复。
-正常模式下只有该链首次演化时历史为空；下一次诊断传上一条 parent 的 expression 与 updated_understanding，注明可能属于祖先。`--no-memory` 显式传空历史及空的 previous_understanding，但仍记录历史。
+正常模式下只有该链首次演化时历史为空；下一次反事实推理传上一条 parent 的 expression 与 updated_understanding，注明可能属于祖先。`--no-memory` 显式传空历史及空的 previous_understanding，但仍记录历史。
 
 ## 机制证据
 
@@ -47,7 +47,7 @@ factor ID 与公式继承同一 chain ID；保留时也继续同一链，不跨�
 
 机制放在对应历史记录的 `parent.mechanisms` 内；禁用或无法计算的指标为 null，不能当成零。
 不包含预设编辑类型或处置分类。
-每轮 save 覆盖 `memory.json`；逐条诊断同时追加轮次 JSONL。
+每轮 save 覆盖 `memory.json`；逐条反事实推理同时追加轮次 JSONL。
 证据适用于测量时的 parent 和 pool；迁移后的价值需重新验证。
 
 Memory 只作为 LLM 提出进化子代的 context，正向、负向证据与失败尝试均保留。

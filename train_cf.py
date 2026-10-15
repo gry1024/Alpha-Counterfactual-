@@ -1,9 +1,13 @@
-"""Counterfactual factor evolution; run from the repository root."""
+"""AlphaCREAM: Counterfactual Reasoning and Evidence-Guided Evolution for Alpha Mining.
+
+Run from the repository root.
+"""
 import argparse
 from datetime import datetime
 import gc
 import json
 import os
+import random
 from pathlib import Path
 import sys
 import subprocess
@@ -65,8 +69,9 @@ def test(args, source):
             file.write(json.dumps(dict(round=round_id, dataset=dataset, **values)) + "\n")
     from matplotlib.figure import Figure
     history = pd.read_json(result_path, lines=True)
-    figure = Figure(figsize=(10, 4), layout="constrained")
-    for axis, metric in zip(figure.subplots(1, 2), ("ic", "ret")):
+    figure = Figure(figsize=(15, 8), layout="constrained")
+    for axis, metric in zip(figure.subplots(2, 3).flat,
+                            ("ic", "ric", "ret", "icir", "ricir", "ret_sharpe")):
         for dataset, rows in history.groupby("dataset"):
             rows = rows.drop_duplicates("round", keep="last").sort_values("round")
             axis.plot(rows["round"], rows[metric], marker="o", label=dataset)
@@ -74,6 +79,19 @@ def test(args, source):
         axis.grid(alpha=0.3)
         axis.legend()
     figure.savefig(source.parent / "adaptive_combination.png", dpi=150)
+    figure = Figure(figsize=(12, 4), layout="constrained")
+    for axis, dataset, prefix in zip(figure.subplots(1, 2), ("Validation", "Test"),
+                                     ("valid_ret_s", "ret_s")):
+        returns = np.load(source.parent / f"{prefix}.npy")
+        dates = pd.to_datetime(np.load(source.parent / f"{prefix}_dates.npy"))
+        axis.plot(dates, (1 + returns).cumprod() - 1)
+        axis.set(title=f"{dataset} (round {round_id})", ylabel="Cumulative return")
+        axis.grid(alpha=0.3)
+        axis.tick_params(axis="x", rotation=30)
+    figure.savefig(source.parent / "profit_curves.png", dpi=150)
+    print(f"Round {round_id}: Validation/Test metrics -> {result_path}; "
+          f"curves -> {source.parent / 'adaptive_combination.png'}, "
+          f"{source.parent / 'profit_curves.png'}", flush=True)
 
 
 def train(args):
@@ -95,28 +113,35 @@ def train(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--instrument", default="csi300")
+    parser.add_argument("--instrument", "--instruments", dest="instrument", default="csi300")
     parser.add_argument("--qlib-path")
-    parser.add_argument("--start-pool", default="start_pool.json")
+    parser.add_argument("--start-pool", default="start_pool_simple.json")
     parser.add_argument("--test-only", metavar="FINAL_JSON")
-    for name, default in dict(seed=0, cuda=0, rounds=10, parents=5,
+    parser.add_argument("--reasoning-workers", "--diagnosis-workers", dest="reasoning_workers", type=int, default=5)
+    for name, default in dict(seed=0, cuda=0, rounds=10, parents=10,
                               pool_capacity=50, horizon=20,
                               max_nodes=60, max_depth=10, max_backtrack=100, chunk_size=64,
-                              llm_timeout=600, llm_attempts=5, llm_retry_wait=5, n_factors=20, diagnosis_workers=5).items():
+                              llm_timeout=600, llm_attempts=5, llm_retry_wait=5, n_factors=20).items():
         parser.add_argument("--" + name.replace("_", "-"), type=int, default=default, dest=name)
-    for name, default in dict(alpha=50.0, beta=800.0, gamma=2, cost_weight=2, temperature=0.5, correlation_threshold=0.8).items():
+    for name, default in dict(alpha=5.0, beta=800.0, gamma=2.0, cost_weight=2.0, temperature=0.5, correlation_threshold=0.8).items():
         parser.add_argument("--" + name.replace("_", "-"), type=float, default=default, dest=name)
-    for name in ("no-cf-evidence", "no-pool-credit", "no-memory"):
+    for name in ("no-cf-evidence", "no-pool-credit", "no-memory", "no-pool-selection"):
         parser.add_argument("--" + name, action="store_true")
     args = parser.parse_args()
     source = args.test_only
     if source:
         saved = json.loads(Path(source).read_text())
         config = saved.get("args") or json.loads((Path(source).parent / "args.json").read_text())
+        config.setdefault("reasoning_workers", config.get("diagnosis_workers", args.reasoning_workers))
         config.update(cuda=args.cuda, test_only=args.test_only, qlib_path=args.qlib_path)
         args = argparse.Namespace(**{k: config.get(k, v) for k, v in vars(args).items()})
+    if args.no_pool_selection:
+        args.beta = 0.0
+    weights = np.array([args.alpha, args.beta, args.gamma, args.cost_weight])
+    if not np.isfinite(weights).all() or (weights < 0).any() or not (weights > 0).any():
+        parser.error("Score weights must be finite, nonnegative and not all zero")
     if args.rounds < 0 or min(args.parents,
-            args.pool_capacity, args.horizon, args.chunk_size, args.n_factors, args.diagnosis_workers, args.llm_timeout, args.llm_attempts, args.llm_retry_wait) < 1:
+            args.pool_capacity, args.horizon, args.chunk_size, args.n_factors, args.reasoning_workers, args.llm_timeout, args.llm_attempts, args.llm_retry_wait) < 1:
         parser.error("Invalid counts")
     if not 0 <= args.correlation_threshold <= 1:
         parser.error("correlation-threshold must be between 0 and 1")
@@ -125,6 +150,7 @@ def main():
     env_key = "QLIB_PATH_SP500" if args.instrument == "sp500" else "QLIB_PATH_CN"
     default = "data/qlib_data/us_data_qlib_latest" if args.instrument == "sp500" else "data/qlib_data/cn_data_rolling"
     args.qlib_path = str(Path(args.qlib_path or os.environ.get(env_key) or default).resolve())
+    random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     if args.test_only:

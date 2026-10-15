@@ -1,29 +1,5 @@
 """
 plot_profit_curve.py — cumulative-return curves from `ret_s.npy` files.
-
-Style mimics `img/backtest.png`:
-  - Wide canvas, seaborn whitegrid, dashed gridlines
-  - Y-axis normalised so every series starts at 1.0 (cumulative wealth)
-  - X-axis is dates with year-month format
-  - Legend at top, frameless
-
-Edit `RUNS` at the top to add / remove / rename a series.  Each value can be:
-  - str  : path to `ret_s.npy`, default start date 2023-05-01
-  - tuple[str, str] : (path, "YYYY-MM-DD" start date)
-  - dict  : full config with these keys:
-      path           (str,  required)
-      start_date     (str,  default DEFAULT_START_DATE = "2023-05-01")
-      data_start_date(str,  when the .npy file actually starts — used
-                      together with `start_date` to skip leading entries)
-      color          (str,  default = PALETTE[name])
-      linestyle      (str,  default "-")
-      linewidth      (float, default LINEWIDTH)
-
-Every .npy holds one entry per *real trading day*; the x-axis is taken from
-the real qlib trading calendar (CALENDAR_PATH), not a synthetic Mon–Fri grid,
-so market holidays are not treated as trading days.
-
-Paths are relative to the script's directory.
 """
 
 from __future__ import annotations
@@ -41,39 +17,82 @@ import seaborn as sns
 # Legacy files retain their original start; new files use ret_s_dates.npy.
 # ---------------------------------------------------------------------------
 RUNS: dict = {
-    "Alpha158": {"path": "data/alpha158_logs/csi300/ret_s.npy", "data_start_date": "2023-05-01"},
-    "AlphaSAGE": {"path": "data/gfn_logs/pool_50/gfn_gnn_csi300_50_2-0.01-1.0-1.0-1.0-0.3-linear-0.0/ret_s.npy", "data_start_date": "2023-05-01"},
-    "AlphaPROBE": {"path": "data/knowledge_logs/pool_50/kg_dag_and_bayesian_icir_and_mutl_new_no_decay_MiniMax-M3_5_csi300_0.5_7_50_0.9_50_20_0.006_True_True_False_True_0.7_0.1_0.05/ret_s.npy", "data_start_date": "2023-05-01"},
-    "AlphaGen": {"path": "data/ppo_logs/pool_20/ppo_csi300_20_0-20260905132532/ppo_csi300_20_0_20260905132532/ret_s.npy", "data_start_date": "2023-05-01"},
-    "Ours": {"path": "data/cf_logs/20261009_214514_822056_csi300_0_MiniMax-M3/ret_s.npy", "data_start_date": "2023-05-01"},
-    # "AlphaCF_START": {"path": "ret_s.npy", "data_start_date": "2023-05-01"},
+    "csi300": {
+        "LightGBM": "data/lightgbm_logs/csi300/ret_s.npy",
+        "XGBoost": "data/xgboost_logs/csi300/ret_s.npy",
+        "Alpha158": "data/alpha158_logs/csi300_equal_weight/ret_s.npy",
+        "GP": "data/gp_logs/csi300_seed_0/ret_s.npy",
+        "AlphaQCM": "data/qcm_logs/csi300_qrdqn_seed0/ret_s.npy",
+        "AlphaSAGE": {"path": "data/gfn_logs/pool_50/gfn_gnn_csi300_50_2-0.01-1.0-1.0-1.0-0.3-linear-0.0/ret_s.npy", "data_start_date": "2023-05-01"},
+        "AlphaPROBE": {"path": "data/knowledge_logs/pool_50/kg_dag_and_bayesian_icir_and_mutl_new_no_decay_MiniMax-M3_5_csi300_0.5_7_50_0.9_50_20_0.006_True_True_False_True_0.7_0.1_0.05/ret_s.npy", "data_start_date": "2023-05-01"},
+        "AlphaGen": {"path": "data/ppo_logs/pool_20/ppo_csi300_20_0-20260905132532/ppo_csi300_20_0_20260905132532/ret_s.npy", "data_start_date": "2023-05-01"},
+        "Ours": {"path": "data/cf_logs/20261013_225346_506634_csi300_0_MiniMax-M3/ret_s.npy", "data_start_date": "2023-05-01"},
 
-    "CSI300 Index": {
-        "path":            "data/index_real_logs/pool_all/real_csi300/ret_s.npy",
-        "data_start_date": "2023-05-01",   # first entry in the .npy file
-        "start_date":      "2023-05-01",   # align with the alpha series
-        "color":           "#000000",
-        "linestyle":       "--",
-        "linewidth":       2.2,
+        "CSI300 Index": {
+            "path":            "data/index_real_logs/pool_all/real_csi300/ret_s.npy",
+            "data_start_date": "2023-05-01",   # first entry in the .npy file
+            "start_date":      "2023-05-01",   # align with the alpha series
+            "color":           "#000000",
+            "linestyle":       "--",
+            "linewidth":       1.6,
+        },
+    },
+    "csi500": {
+        "LightGBM": "data/lightgbm_logs/csi500/ret_s.npy",
+        "XGBoost": "data/xgboost_logs/csi500/ret_s.npy",
+        "Alpha158": "data/alpha158_logs/csi500_equal_weight/ret_s.npy",
+        "GP": "data/gp_logs/csi500_seed_0/ret_s.npy",
+        "AlphaQCM": "data/qcm_logs/csi500_qrqdn_seed0/ret_s.npy",
+        "AlphaSAGE": "data/gfn_logs/pool_50/gfn_gnn_csi500_50_0-0.01-1.0-1.0-1.0-0.3-linear-0.0/ret_s.npy",
+        "AlphaPROBE": "data/knowledge_logs/pool_50/kg_dag_and_bayesian_icir_and_mutl_new_no_decay_MiniMax-M3_5_csi500_0.5_7_50_0.9_50_20_0.006_True_True_False_True_0.7_0.1_0.05/ret_s.npy",
+        "AlphaGen": "data/ppo_logs/pool_20/ppo_csi500_20_0-20261013092950/ppo_csi500_20_0_20261013092950/ret_s.npy",
+        "Ours": "data/cf_logs/20261014_171245_875336_csi500_1_MiniMax-M3/ret_s.npy",
+        "CSI500 Index": {
+            "path": "data/index_real_logs/pool_all/real_csi500/ret_s.npy",
+            "color": "#000000",
+            "linestyle": "--",
+            "linewidth": 1.6,
+        },
+    },
+    "csi1000": {
+        "LightGBM": "data/lightgbm_logs/csi1000/ret_s.npy",
+        "XGBoost": "data/xgboost_logs/csi1000/ret_s.npy",
+        "Alpha158": "data/alpha158_logs/csi1000_equal_weight/ret_s.npy",
+        "GP": "data/gp_logs/csi1000_seed_0/ret_s.npy",
+        "AlphaQCM": "data/qcm_logs/csi1000_qrqdn_seed0/ret_s.npy",
+        "AlphaSAGE": "data/gfn_logs/pool_50/gfn_gnn_csi1000_50_0-0.01-1.0-1.0-1.0-0.3-linear-0.0/ret_s.npy",
+        "AlphaPROBE": None,
+        "AlphaGen": "data/ppo_logs/pool_20/ppo_csi1000_20_0-20261014201645/ppo_csi1000_20_0_20261014201645/ret_s.npy",
+        "Ours": "data/cf_logs/20261015_062123_202538_csi1000_0_MiniMax-M3/ret_s.npy",
+        "CSI1000 Index": {
+            "path": "data/index_real_logs/pool_all/real_csi1000/ret_s.npy",
+            "color": "#000000",
+            "linestyle": "--",
+            "linewidth": 1.6,
+        },
     },
 }
 
 # 2) Palette — muted tones reminiscent of `img/backtest.png`.
 PALETTE: dict[str, str] = {
+    "CSI300 Index": "#000000",
+    "CSI500 Index": "#000000",
+    "CSI1000 Index": "#000000",
+    "LightGBM":   "#AAB8D0",
+    "XGBoost":    "#C28CB8",
+    "GP":         "#8172B3",
+    "AlphaQCM":   "#937860",
     "Alpha158":   "#4C72B0",  # steel blue
     "AlphaSAGE":  "#2E8B57",  # sea green
     "AlphaPROBE": "#E07B5A",  # muted coral
     "AlphaGen":   "#82B366",  # light green
     "Ours":    "#FF0000",  # red
-    # "AlphaCF_START": "#4C72B0",  # steel blue
 }
 
 # 3) Plot knobs.
-TITLE = "CSI300 Profit Curve"
-OUTPUT_PNG = "profit_curve.png"
 DEFAULT_START_DATE = "2023-05-01"
 DEFAULT_END_DATE = "2026-04-30"
-LINEWIDTH = 2.2
+LINEWIDTH = 1.6
 
 # Real trading calendar (identical to the one the cn backtests use).  All
 # series are indexed against this so holidays line up correctly.
@@ -86,11 +105,10 @@ def _resolve(path_str: str, anchor: Path) -> Path:
     return p if p.is_absolute() else (anchor / p).resolve()
 
 
-def _load_ret(path_str: str, anchor: Path) -> np.ndarray | None:
+def _load_ret(path_str: str, anchor: Path) -> np.ndarray:
     p = _resolve(path_str, anchor)
     if not p.exists():
-        print(f"[warn] missing file: {p}")
-        return None
+        raise FileNotFoundError(f"return series not found: {p}")
     return np.load(p).astype(np.float64)
 
 
@@ -139,19 +157,17 @@ def _parse_spec(spec):
     raise ValueError(f"Unsupported spec: {spec!r}")
 
 
-def main() -> None:
-    here = Path(__file__).resolve().parent
-    calendar = _load_calendar(here)
+def plot_market(market: str, runs: dict, here: Path, calendar: list[datetime], output_name: str | None = None) -> None:
 
     sns.set_style("whitegrid")
     sns.set_context("notebook", rc={
         "font.family": "serif",
-        "font.size": 14,
-        "axes.titlesize": 16,
-        "axes.labelsize": 14,
-        "xtick.labelsize": 12,
-        "ytick.labelsize": 12,
-        "legend.fontsize": 12,
+        "font.size": 11,
+        "axes.titlesize": 11,
+        "axes.labelsize": 11,
+        "xtick.labelsize": 9,
+        "ytick.labelsize": 9,
+        "legend.fontsize": 9,
         "axes.linewidth": 0.8,
         "axes.edgecolor": "#444",
         "grid.color": "#cccccc",
@@ -160,10 +176,15 @@ def main() -> None:
         "grid.alpha": 0.6,
     })
 
-    fig, ax = plt.subplots(figsize=(14.0, 7.0), dpi=130)
+    fig, ax = plt.subplots(figsize=(6.0, 6.0), dpi=240)
+    fig.subplots_adjust(left=0.17, right=0.95, bottom=0.13, top=0.94)
+    ax.set_box_aspect(1)
 
     summary: list[tuple[str, int, float, float, float]] = []
-    for name, raw_spec in RUNS.items():
+    for name, raw_spec in runs.items():
+        if raw_spec is None:
+            print(f"[skip] {market}/{name}: pending result")
+            continue
         cfg = _parse_spec(raw_spec)
         path = cfg["path"]
         ret = _load_ret(path, here)
@@ -195,10 +216,10 @@ def main() -> None:
         ax.plot(
             dates,
             cum,
-            color=cfg.get("color", PALETTE.get(name)),
+            color=PALETTE[name],
             linestyle=cfg.get("linestyle", "-"),
             linewidth=cfg.get("linewidth", LINEWIDTH),
-            label=name + (" (partial)" if partial else ""),
+            label=cfg.get("label", name) + (" (partial)" if partial else ""),
             solid_capstyle="round",
         )
         summary.append((name, len(ret), float(ret.mean()), float(ret.std()), float(cum[-1])))
@@ -206,35 +227,37 @@ def main() -> None:
     if not summary:
         raise SystemExit("No series plotted — check the paths in RUNS.")
 
-    # Legend above the axes, frameless, 3 columns.
-    ax.legend(
-        loc="upper left",
-        bbox_to_anchor=(0.0, 1.10),
-        ncol=3,
-        handlelength=2.6,
-        handletextpad=0.6,
-        columnspacing=1.6,
-        borderaxespad=0.0,
-    )
-
-    # X-axis: year-month labels.
-    ax.xaxis.set_major_locator(mdates.AutoDateLocator(maxticks=12))
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
-    fig.autofmt_xdate(rotation=0, ha="center")
-
+    # Keep all methods inside the upper-left corner as the baseline list grows.
+    ax.legend(loc="upper left", ncol=2, frameon=True, framealpha=0.9,
+              facecolor="white", edgecolor="none", handlelength=1.5, handletextpad=0.4,
+              columnspacing=0.9, labelspacing=0.35, fontsize=8)
+    ax.set_title(market.upper(), pad=8, fontsize=12)
+    # Always label both Test boundaries; sparse interior ticks keep the square compact.
+    test_start = datetime.fromisoformat(DEFAULT_START_DATE)
+    test_end = datetime.fromisoformat(DEFAULT_END_DATE)
+    interior = [datetime(year, 7, 1) for year in range(test_start.year + 1, test_end.year)
+                if test_start < datetime(year, 7, 1) < test_end]
+    ticks = [test_start, *interior, test_end]
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([ticks[0].strftime("%Y-%m-%d"),
+                        *[d.strftime("%Y-%m") for d in interior],
+                        ticks[-1].strftime("%Y-%m-%d")])
+    ax.get_xticklabels()[0].set_horizontalalignment("left")
+    ax.get_xticklabels()[-1].set_horizontalalignment("right")
     ax.set_xlabel("Date")
     ax.set_ylabel("Cumulative Return")
-    ax.set_title(f"{TITLE} | {DEFAULT_START_DATE} to {DEFAULT_END_DATE}", pad=70)
     ax.set_xlim(datetime.fromisoformat(DEFAULT_START_DATE), datetime.fromisoformat(DEFAULT_END_DATE))
+    ax.grid(axis="x", visible=False)
 
     # Y-limits with headroom.
     ymin, ymax = ax.get_ylim()
     pad = max(0.05, 0.10 * (ymax - ymin))
     ax.set_ylim(ymin - pad, ymax + pad)
 
-    out_path = (here / OUTPUT_PNG).resolve()
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=180, bbox_inches="tight")
+    out_path = (here / (output_name or f"profit_curve_{market}.png")).resolve()
+    fig.savefig(out_path, dpi=240)
+    fig.savefig(out_path.with_suffix(".pdf"))
+    plt.close(fig)
     print(f"[ok] saved {out_path}")
 
     print()
@@ -243,5 +266,24 @@ def main() -> None:
         print(f"{name:<14} {n:>5} {m*100:>+8.3f}% {s*100:>8.3f}% {f:>+9.4f}")
 
 
+def main() -> None:
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--alpha158-equal-weight", action="store_true",
+                        help="Also save the explicitly labeled CSI1000 equal-weight curve (legacy filename).")
+    args = parser.parse_args()
+    here = Path(__file__).resolve().parent
+    calendar = _load_calendar(here)
+    if args.alpha158_equal_weight:
+        runs = dict(RUNS["csi1000"])
+        runs["Alpha158"] = {"path": "data/alpha158_logs/csi1000_equal_weight/ret_s.npy",
+                            "label": "Alpha158 (equal-weight)"}
+        plot_market("csi1000", runs, here, calendar, "profit_curve_csi1000_equal_weight.png")
+    else:
+        for market, runs in RUNS.items():
+            plot_market(market, runs, here, calendar)
+
+
 if __name__ == "__main__":
     main()
+

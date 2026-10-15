@@ -175,17 +175,25 @@ class AlphaCFPool:
         rows = [[abs(self.evaluate(e)["reward"]), c_pool(e), diversity(e),
                  1 - self.evaluate(e)["cost"]]
                 for e in members]
-        scores = np.array(rows) @ weights
-        parent_score = scores[0]
 
         # Apply both update gates before canonicalizing equivalent children.
         correlation_ok = [True] + [1.0 - row[2] <= self.args.correlation_threshold for row in rows[1:]]
-        credit_ok = [True] + [row[1] > 1e-6 for row in rows[1:]]
+        credit_ok = [True] + [getattr(self.args, "no_pool_selection", False) or row[1] > 1e-6
+                              for row in rows[1:]]
         representatives = []
         allowed = [i for i in range(len(members)) if correlation_ok[i] and credit_ok[i]]
         for i in sorted(allowed, key=lambda i: (complexity(members[i]), i)):
             if not any(self.equivalent(members[i], members[j]) for j in representatives):
                 representatives.append(i)
+        values = np.asarray(rows, dtype=float)
+        if not np.isfinite(values).all():
+            raise ValueError("Nonfinite selection components")
+        if getattr(self.args, "no_pool_selection", False):
+            weights[1] = 0.0
+        if not np.isfinite(weights).all() or (weights < 0).any() or not (weights > 0).any():
+            raise ValueError("Selection weights must be finite, nonnegative and not all zero")
+        scores = values @ weights
+        parent_score = scores[0]
         parent_rep = next(i for i in representatives if self.equivalent(parent, members[i]))
         best = max(representatives, key=lambda i: (scores[i], -complexity(members[i]), -i))
         selected = best if scores[best] > scores[parent_rep] else parent_rep
@@ -204,6 +212,7 @@ class AlphaCFPool:
             self.exprs[index] = winner
         return dict(parent=str(parent), parent_reward=self.evaluate(parent)["reward"],
                     parent_complexity=parent_nodes, parent_score=float(parent_score),
+                    parent_components=rows[0],
                     parent_group_score=float(scores[parent_rep]),
                     reason=("equivalent_simplification" if winner is not None and selected == parent_rep else "score_improvement"
                             if winner is not None else "no_new_offspring" if not children else "correlation_threshold"

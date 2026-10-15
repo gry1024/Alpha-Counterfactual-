@@ -61,7 +61,10 @@ A null score means unmeasured, not zero. Credits are conditional on the exact pa
 intervention and pool; they are not guarantees for transferred or modified mechanisms.
 """
 
-PROMPT_DIAGNOSIS = """
+PROMPT_REASONING = """
+Perform counterfactual reasoning about this factor's structural mechanisms.
+Identify structural mechanisms with coherent financial or mathematical meanings.
+A mechanism may span multiple operators; mechanisms may be nested or overlap.
 Explain your understanding in at most 3 short sentences: what the complete formula
 computes, a tentative economic hypothesis, and important validity conditions or unknowns.
 Previous understanding may describe an ancestor; reassess it against the current formula.
@@ -100,8 +103,8 @@ Return only {{"understanding":"Up to 3 short sentences",
 """
 
 PROMPT_EVOLUTION = """
-First return updated_understanding in at most 3 short sentences. Compare the diagnostic
-understanding and predictions with measured evidence, citing current mechanism IDs (m1, m2,
+First return updated_understanding in at most 3 short sentences. Compare the initial understanding and counterfactual
+predictions with measured evidence, citing current mechanism IDs (m1, m2,
 ...). Explain what was supported or contradicted, which structures serve which roles, and
 what remains uncertain. Distinguish changed common ranks from changed coverage; economic
 stories are hypotheses, not causal proofs. With no measured evidence, explicitly retain
@@ -123,25 +126,26 @@ about, not a predetermined decision. Unmeasured evidence is not zero.
 Mechanism evidence and memory are context for your reasoning, not automatic replacement
 candidates. You decide whether to reproduce a measured edit or propose a new structure.
 Negative delta_cf is useful evidence that this intervention hurt individual quality;
-do not discard negative evidence or mistake every diagnostic edit for an improvement.
+do not discard negative evidence or mistake every counterfactual edit for an improvement.
 Historical memory contains ALL previous evolutions of this seed's independent chain:
-ancestor factors, diagnostic evidence, offspring proposals and selection/retention outcomes.
+ancestor factors, counterfactual evidence, offspring proposals and selection/retention outcomes.
 Use both successful and rejected attempts. An empty history means this chain has not
 evolved before, unless memory is disabled. Historical credits belong to their original
 factor and pool context; do not assume they carry unchanged to the current parent.
 
 Each child is backtested on Train. A child can update the pool only if its maximum mean
 absolute daily Spearman correlation with peers is <= {correlation_threshold}; peers exclude
-the original parent. Every child must also have pool_credit > 0.000001.
-Both hard gates apply to equivalent simplifications too, before grouping; there is no zero-credit
+the original parent. Require positive pool credit: {require_pool_credit}.
+When true, every child must have pool_credit > 0.000001; when false, this gate is disabled.
+Active hard gates apply to equivalent simplifications too, before grouping; there is no zero-credit
 simplification exception. The parent remains the retention baseline without filtering.
-The parent and children passing both gates are grouped by
+The parent and children passing the active gates are grouped by
 complete normalized-rank equivalence (identical finite masks, equal ranks or a consistent
 global reversal within absolute tolerance 0.000001). Each group keeps its simplest formula;
 equal complexity preserves proposal order, with the parent first.
-All group representatives compete together under the natural-scale score
-S = alpha*|R| + beta*C_pool + gamma*diversity + cost_weight*(1-turnover),
-without min-max normalization. Default alpha=50, beta=1000, gamma=2, cost_weight=2.
+All representatives compete using S = alpha*|R| + beta*C_pool + gamma*diversity
++ lambda*(1-turnover), using the raw component values without candidate-set scaling.
+Weights in that order: {score_weights}. They are fixed during search.
 C_pool compares full-Train fitted and evaluated OLS combinations; diversity and credit use
 the current pool excluding the original parent. A distinct-signal group must strictly beat
 the parent group's representative score. The highest score wins; ties prefer fewer nodes,

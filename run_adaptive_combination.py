@@ -299,6 +299,12 @@ def run(args):
     """
     Main function to run adaptive factor combination and evaluation.
     """
+    global batch_spearmanr
+    if getattr(args, "efficient_rank", False):
+        from alpha158.ranking import batch_spearmanr as efficient_spearmanr
+        batch_spearmanr = efficient_spearmanr
+    else:
+        from alphagen.utils.correlation import batch_spearmanr
     window = args.window
     if isinstance(window, str):
         assert window == 'inf'
@@ -343,7 +349,7 @@ def run(args):
             metrics = dict(ret=mean * len(ret_s) / 3, ret_std=std, retir=mean / std,
                            ret_sharpe=batch_sharpe_ratio(ret_s, 0.0).item(),
                            ret_mdd=batch_max_drawdown(ret_s).item())
-            print(f"CSI300 index benchmark: {test_start_time}..{test_end_time}, n={len(ret_s)}")
+            print(f"{benchmark} index benchmark: {test_start_time}..{test_end_time}, n={len(ret_s)}")
             print(pd.DataFrame([metrics], index=["Test"]).to_string())
             return
 
@@ -378,30 +384,30 @@ def run(args):
         if args.use_weights:
             raise ValueError("Alpha158 uses historical OLS; do not enable --use_weights")
         from alpha158.features import load_tensor
-        fct_tensor = load_tensor(data_all)
+        fct_tensor = load_tensor(data_all, cache_file=getattr(args, "alpha158_cache_file", None))
         print(f"Loaded {fct_tensor.shape[-1]} official Alpha158 features.")
     else:
         expressions, weights = load_alpha_pool_by_path(args.expressions_file)
         print(f"Loaded {len(expressions)} expressions.")
 
     if args.use_weights:
-        data_test = StockData(instrument=args.instruments,
-                              start_time=test_start_time,
-                              end_time=test_end_time,
-                              qlib_path=QLIB_PATH,
-                              device=device)
-        fct_tensor = exprs2tensor(expressions, data_test, normalize=True)
+        rows = []
         weights = _dev(torch.tensor(weights))
-        fct_tensor = fct_tensor @ weights
-        tgt_tensor = exprs2tensor([target], data_test, normalize=False)
-        ret_tgt_tensor = exprs2tensor([return_target], data_test, normalize=False)
-        test_results, ret_s = get_tensor_metrics(_dev(fct_tensor), _dev(tgt_tensor), _dev(ret_tgt_tensor))
-        ret_s = ret_s.cpu().numpy()
-        save_path = os.path.join(os.path.dirname(args.expressions_file), 'ret_s.npy')
-        np.save(save_path, ret_s)
-        np.save(save_path.replace("ret_s.npy", "ret_s_dates.npy"), _trading_days(data_test).values)
-        # Format and print results
-        results_df = pd.DataFrame([test_results], index=['Test'])
+        for name, start, end in (("Validation", valid_start_time, valid_end_time),
+                                 ("Test", test_start_time, test_end_time)):
+            data_split = StockData(instrument=args.instruments, start_time=start,
+                                   end_time=end, qlib_path=QLIB_PATH, device=device)
+            prediction = exprs2tensor(expressions, data_split, normalize=True) @ weights
+            labels = exprs2tensor([target], data_split, normalize=False)
+            daily_returns = exprs2tensor([return_target], data_split, normalize=False)
+            metrics, ret_s = get_tensor_metrics(_dev(prediction), _dev(labels), _dev(daily_returns))
+            rows.append(metrics)
+            prefix = "valid_ret_s" if name == "Validation" else "ret_s"
+            output = os.path.dirname(args.expressions_file)
+            np.save(os.path.join(output, prefix + ".npy"), ret_s.cpu().numpy())
+            np.save(os.path.join(output, prefix + "_dates.npy"), _trading_days(data_split).values)
+            del data_split, prediction, labels, daily_returns, ret_s
+        results_df = pd.DataFrame(rows, index=["Validation", "Test"])
         print("\n--- Final Performance Metrics ---")
         
         # Print with full precision and no truncation
@@ -429,7 +435,7 @@ def run(args):
         ic_list, ric_list, ret_list = [], [], []
         print("Pre-calculating daily metrics for each factor...")
         for i in tqdm(range(fct_tensor.shape[-1])):
-            factor_slice = fct_tensor[..., i]
+            factor_slice = _dev(fct_tensor[..., i])
             target_slice = tgt_tensor[..., 0]
             ic_s = batch_pearsonr(factor_slice, target_slice)
             ric_s = chunk_batch_spearmanr(factor_slice, target_slice, chunk_size=args.chunk_size)
@@ -480,9 +486,9 @@ def run(args):
             good_idx = good_factors.iloc[:args.n_factors].index.to_list()
             
             # Prepare data for linear regression
-            x = fct_tensor[begin:cur-shift, :, good_idx]
+            x = _dev(fct_tensor[begin:cur-shift, :, good_idx])
             y = tgt_tensor[begin:cur-shift, :, :]
-            to_pred = fct_tensor[cur, :, good_idx]
+            to_pred = _dev(fct_tensor[cur, :, good_idx])
             y = y.reshape(-1, y.shape[-1])
             x = x.reshape(-1, x.shape[-1])
             
@@ -583,6 +589,10 @@ if __name__ == '__main__':
                         help='Path to a JSON file containing a list of alpha expressions.')
     parser.add_argument('--metrics_file', type=str, default=None,
                         help='Optional JSON output for performance metrics.')
+    parser.add_argument('--efficient_rank', action='store_true',
+                        help='Use linear-memory average-tie ranks for Spearman correlation.')
+    parser.add_argument('--alpha158_cache_file', type=str, default=None,
+                        help='Optional disk-backed normalized Alpha158 feature tensor.')
     parser.add_argument('--instruments', type=str, default='csi300')
     parser.add_argument('--train_end_year', type=int, default=2021)
     parser.add_argument('--threshold_ric', type=float, default=0.015)

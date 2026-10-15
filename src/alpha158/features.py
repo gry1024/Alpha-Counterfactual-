@@ -6,11 +6,17 @@ from qlib.data import D
 from alphagen.utils.pytorch_utils import normalize_by_day
 
 
-def load_tensor(data, batch_size=16):
+def load_tensor(data, batch_size=16, cache_file=None):
     fields, _ = Alpha158DL.get_feature_config()
     dates = data._dates[data.max_backtrack_days:data.max_backtrack_days + data.n_days]
     instruments = D.instruments(data._instrument) if isinstance(data._instrument, str) else data._instrument
-    result = torch.empty((len(dates), data.n_stocks, len(fields)), device=data.device)
+    if cache_file:
+        # Factor-major layout makes each per-factor metric pass a sequential read.
+        cache = np.lib.format.open_memmap(cache_file, mode="w+", dtype=np.float32,
+                                         shape=(len(fields), len(dates), data.n_stocks))
+        result = torch.from_numpy(cache).permute(1, 2, 0)
+    else:
+        result = torch.empty((len(dates), data.n_stocks, len(fields)), device=data.device)
     for start in range(0, len(fields), batch_size):
         batch = fields[start:start + batch_size]
         frame = D.features(instruments, batch, start_time=dates[0], end_time=dates[-1], freq=data.freq)
@@ -18,6 +24,8 @@ def load_tensor(data, batch_size=16):
             values = frame[field].unstack("instrument").reindex(index=dates, columns=data._stock_ids)
             tensor = torch.tensor(values.to_numpy(dtype=np.float32), device=data.device)
             tensor = tensor.masked_fill(~tensor.isfinite(), torch.nan)
-            result[:, :, start + offset] = normalize_by_day(tensor)
+            result[:, :, start + offset] = normalize_by_day(tensor).to(result.device)
         print(f"[Alpha158] loaded {min(start + batch_size, len(fields))}/{len(fields)} features", flush=True)
+    if cache_file:
+        cache.flush()
     return result

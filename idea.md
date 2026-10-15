@@ -1,4 +1,4 @@
-# 基于反事实机制演化的因子挖掘
+# AlphaCREAM: Counterfactual Reasoning and Evidence-Guided Evolution for Alpha Mining
 
 ## 研究动机
 
@@ -24,7 +24,7 @@ $$
 
 同时，高质量 Alpha 往往依赖多个结构组件之间的组合关系，仅围绕单个算子、窗口或 subtree 进行局部搜索，难以产生足够大的结构跃迁。
 
-因此，本工作将 **Structural Counterfactual Reasoning** 用于机制诊断，并与 evolutionary search 结合：
+因此，本工作将 **Structural Counterfactual Reasoning** 用于机制级反事实推理，并与 evolutionary search 结合：
 
 > **Counterfactual reasoning 识别有效机制，Evolutionary search 在机制层面进行新的结构探索。**
 
@@ -33,7 +33,7 @@ $$
 $$
 \mathrm{Factor\ Pool}
 \rightarrow
-\mathrm{Counterfactual\ Diagnosis}
+\mathrm{Counterfactual\ Reasoning}
 \rightarrow
 \mathrm{Mechanism\ Evidence}
 \rightarrow
@@ -79,7 +79,7 @@ Expression:
 volume / TSMean(volume, 20)
 ```
 
-机制可以对应局部 subtree，也可以覆盖整个因子。诊断不做编辑类型枚举：删除算子、调整窗口、替换输入与经济意义重写都属于同一类结构干预。例如把 `Mul(1.0, $close)` 整式替换为 `$close`，本身就是一次有意义的冗余诊断。
+机制可以对应局部 subtree，也可以覆盖整个因子。反事实推理不做编辑类型枚举：删除算子、调整窗口、替换输入与经济意义重写都属于同一类结构干预。例如把 `Mul(1.0, $close)` 整式替换为 `$close`，本身就是一次有意义的冗余反事实推理。
 
 对 mechanism $m_i$ 构造反事实编辑：
 
@@ -103,7 +103,7 @@ $$
 
 这些量只是真实数据上的结构证据，不附带预设处置标签，也不限定后续演化操作：
 
-> **诊断只给实测证据，不给结论；机制应被保留、替换还是重新组合，交由 LLM 结合证据与机制记忆自主判断。**
+> **反事实推理只给实测证据，不给结论；机制应被保留、替换还是重新组合，交由 LLM 结合证据与机制记忆自主判断。**
 
 ---
 
@@ -229,35 +229,20 @@ $C_{\mathrm{pool}}>0$ 表示用 $e$ 替换 $f$ 后组合效用提升，$C_{\math
 
 该量只有这一个定义，后文机制证据与因子替换打分都直接引用它，不另立等价公式：
 
-- 机制证据（Step 3）：$f$ 为被诊断 parent，$e$ 为反事实 $f'$，$P$ 为轮初池；
+- 机制证据（Step 3）：$f$ 为被反事实推理 parent，$e$ 为反事实 $f'$，$P$ 为轮初池；
 - 父因子替换打分：$f$ 为被替换的 parent，$e$ 为候选（含 parent 自身），$P$ 为当前池。
 
 ---
 
 ## Factor Selection
 
-父因子替换统一考虑单因子质量、组合贡献、多样性和 turnover cost。各项**不做 min-max 归一化**，按其自然尺度直接做加权和；默认系数固定，不逐轮归一化或重新标定：
+父因子替换考虑个体质量、组合贡献、多样性和信号稳定性：
 
 $$
-S(f\mid P)
-=
-\alpha\,|R(f)|
-+
-\beta\,C_{\mathrm{pool}}(f\mid P)
-+
-\gamma\,D(f,P)
-+
-\lambda\,\bigl(1-C_{\mathrm{cost}}(f)\bigr)
+S(f\mid P)=\alpha|R(f)|+\beta C_{\mathrm{pool}}(f\mid P)+\gamma D(f,P)+\lambda(1-C_{\mathrm{cost}}(f)).
 $$
 
-四项均越大越好：
-
-- $|R(f)|$：单因子有符号日均 RankIC 的绝对值。
-- $C_{\mathrm{pool}}(f\mid P)$：替换后的 OLS 组合效用变化，可正可负。
-- $D(f,P)$：与当前池的最大 |Spearman| 相关性之补。
-- $1-C_{\mathrm{cost}}(f)$：相邻日信号排序稳定性，越大表示换手 proxy 越低。
-
-原始尺度系数不要求和为 1；默认值固定，不逐轮更新，也不使用 Validation/Test 调参。每个候选的实际分量占比取决于其指标值，不宣称固定为历史重要性占比。
+四项使用原始定义，不根据当前候选集合缩放。默认权重为 **5/800/2/2**，必须有限、非负且至少一个正数。给定相同数据、parent 和 pool，增加其他候选不会改变已有因子的评分。反事实推理信号距离不加入 S。
 
 多样性定义为：
 
@@ -291,7 +276,7 @@ $$
 |P_0|=50
 $$
 
-种子仍来自 Alpha158、AlphaSAGE、AlphaPROBE、AlphaGen 的混合，各来源数量均低于原方案。`plot_profit_curve_start_pool.py` 离线比较多种配额和去相关强度：先覆盖不同的 OHLCV 经济结构，排除只改常量或窗口的同构表达式，以 Train 上的日均绝对 Spearman 限制信号冗余，再在合格方案中按 2022 年验证收益曲线择优。2021 年曲线只作诊断，2023 年以后的 Test 不参与选池。方案、配额和实测指标见 [初始池比较](plans/Start_Pool_Comparison.md)。
+种子仍来自 Alpha158、AlphaSAGE、AlphaPROBE、AlphaGen 的混合，各来源数量均低于原方案。`plot_profit_curve_start_pool.py` 离线比较多种配额和去相关强度：先覆盖不同的 OHLCV 经济结构，排除只改常量或窗口的同构表达式，以 Train 上的日均绝对 Spearman 限制信号冗余，再在合格方案中按 2022 年验证收益曲线择优。2021 年曲线只作反事实推理，2023 年以后的 Test 不参与选池。方案、配额和实测指标见 [初始池比较](plans/Start_Pool_Comparison.md)。
 
 `start_pool.json` 即 $P_0$，训练仅解析、校验与评价全部成员，保持原顺序与符号，不再执行初始重选；数量不匹配、重复或不可用因子直接报错。之后整个 evolutionary process 始终维护：
 
@@ -303,7 +288,7 @@ $$
 
 ---
 
-## Step 2：Counterfactual Diagnosis
+## Step 2：Counterfactual Reasoning
 
 每轮从当前工作池 $P_t$ 中选择固定数量的互异 parent：
 
@@ -311,17 +296,17 @@ $$
 E_t\subset P_t,\qquad |E_t|=10
 $$
 
-轮初计算每个成员的删除贡献 $L_i=U(P_t)-U(P_t\setminus\{f_i\})$（在完整 Train 上重新拟合 OLS），按 $L_i$ 从小到大排序；parent 从低贡献集合与未选成员中混合抽样，不依赖单因子 RankIC 或访问次数。具体抽样规则、并发与日志见 plan 文件。
+轮初计算每个成员的删除贡献 $L_i=U(P_t)-U(P_t\setminus\{f_i\})$（在完整 Train 上重新拟合 OLS），按 $L_i$ 从小到大排序；parent 从低贡献集合抽 ceil(n/2) 个，再从全池未选成员中抽 floor(n/2) 个，奇数时低贡献部分多一个；不依赖单因子 RankIC 或访问次数。具体抽样规则、并发与日志见 plan 文件。
 
-对于每个 $f\in E_t$，LLM 依据因子复杂度自主决定分解出多少个有意义的 mechanism：
+对于每个 $f\in E_t$，结构机制（mechanism）是具有完整金融或数学含义的表达式子树，连同针对其作用的假设和可检验预测。一个机制可以包含多个算子；不同机制可以嵌套或重叠，不要求将整个因子划分为互不相交的部分。LLM 依据因子复杂度自主决定识别多少个有意义的机制：
 
 $$
 M(f)=\{m_1,m_2,\ldots,m_K\},\qquad K\le 5
 $$
 
-机制数量不是命令行参数，也不强制凑数；$K=0$ 表示该 parent 没有值得诊断的结构。
+机制数量不是命令行参数，也不强制凑数；$K=0$ 表示该 parent 没有值得反事实推理的结构。
 
-诊断先用 `understanding`（最多三句）写出完整公式的数学行为、待验证经济解释及边界条件；上一轮理解连同其对应公式传入，若为祖先则重新审视。每个机制的 `reason` 合并要检验的假设与定性预测，不另加预测字段。选择能区分不同解释的干预，预测不是测量结果。
+反事实推理先用 `understanding`（最多三句）写出完整公式的数学行为、待验证经济解释及边界条件；上一轮理解连同其对应公式传入，若为祖先则重新审视。每个机制的 `reason` 合并要检验的假设与定性预测，不另加预测字段。选择能区分不同解释的干预，预测不是测量结果。
 
 每个机制返回：
 
@@ -332,7 +317,7 @@ $$
 | `replacement` | 对该机制的反事实编辑 |
 | `reason` | 要检验的假设及对排序、覆盖或预测能力的定性预测 |
 
-不设置编辑类型枚举。修改窗口时，替换包含该窗口的 rolling subtree。程序负责检查路径、公式合法性、历史范围与可评价性。诊断同时考虑冗余与质量改进；识别到冗余不阻止探索改善。默认最多 5 个 LLM 诊断并发，反事实测量与后续演化仍在主线程按父因子顺序执行，每次替换或保留决定后追加链历史。LLM 调用默认首次等待 600 秒、后续尝试等待 1200 秒，最多 5 次请求并使用指数退避；临时网络失败耗尽后保留该父因子并继续其他父因子和后续轮。网络重试、超时与日志策略见 plan 文件。
+不设置编辑类型枚举。修改窗口时，替换包含该窗口的 rolling subtree。程序负责检查路径、公式合法性、历史范围与可评价性。反事实推理同时考虑冗余与质量改进；识别到冗余不阻止探索改善。默认最多 5 个 LLM 反事实推理并发，反事实测量与后续演化仍在主线程按父因子顺序执行，每次替换或保留决定后追加链历史。LLM 调用默认首次等待 600 秒、后续尝试等待 1200 秒，最多 5 次请求并使用指数退避；临时网络失败耗尽后保留该父因子并继续其他父因子和后续轮。网络重试、超时与日志策略见 plan 文件。
 
 ---
 
@@ -369,15 +354,15 @@ $M$ 是完整 Train 有效观测掩码；$\rho_{\mathrm{rank}}$ 是完整归一�
 
 真正合并等价公式时，还要求完整有效掩码相同，归一化排名以绝对容差 $10^{-6}$ 一致或整体反向一致。距离很小本身不授权删除分母保护项；它不是符号代数证明，也不能保证样本外等价。
 
-$\Delta^{\mathrm{cf}}<0$ 表示此次编辑使个体预测能力下降，$C_{\mathrm{pool}}>0$ 表示此次编辑提升组合质量；两者可能冲突。诊断不根据阈值生成决定性处理建议，由 LLM 结合证据自主判断。
+$\Delta^{\mathrm{cf}}<0$ 表示此次编辑使个体预测能力下降，$C_{\mathrm{pool}}>0$ 表示此次编辑提升组合质量；两者可能冲突。反事实推理不根据阈值生成决定性处理建议，由 LLM 结合证据自主判断。
 
-正常诊断的可测指标为有限浮点数；被消融禁用或相关性无法计算的指标记为 `null`，不能当作 $0$。无法评价的编辑记入失败日志。
+正常反事实推理的可测指标为有限浮点数；被消融禁用或相关性无法计算的指标记为 `null`，不能当作 $0$。无法评价的编辑记入失败日志。
 
 ---
 
 ## Step 4：Mechanism Memory
 
-Counterfactual diagnosis 的结果保存为结构化 Mechanism Memory：
+Counterfactual reasoning 的结果保存为结构化 Mechanism Memory：
 
 | Factor | Path | Mechanism | CF Expression | $\Delta^{\mathrm{cf}}$ | $C_{\mathrm{pool}}$ | dist |
 |---|---|---|---:|---:|---:|
@@ -389,7 +374,7 @@ Counterfactual diagnosis 的结果保存为结构化 Mechanism Memory：
 
 Memory 按 `chain_id` 保存该链全部已完成演化，按发生顺序记录 parent 的 `understanding`、机制假设与证据、`updated_understanding`、所有子代提案（含无效或重复提案）、有效候选评价和最终替换/保留决定。没有机制、没有子代或保留 parent 的轮次也写入历史。
 
-每次演化直接传入该链全部此前历史，不按当前公式过滤、不截断；本轮证据只放在当前 parent 上，决定完成后才追加历史。因此正常模式只有该链首次演化时历史为空；下一次诊断同时读取上一条历史的公式与 `updated_understanding`。`--no-memory` 消融显式传空历史及空的上一轮理解，但仍保存记录。机制证据依赖当时的 parent、干预与池，不能直接保证迁移后的效果。
+每次演化直接传入该链全部此前历史，不按当前公式过滤、不截断；本轮证据只放在当前 parent 上，决定完成后才追加历史。因此正常模式只有该链首次演化时历史为空；下一次反事实推理同时读取上一条历史的公式与 `updated_understanding`。`--no-memory` 消融显式传空历史及空的上一轮理解，但仍保存记录。机制证据依赖当时的 parent、干预与池，不能直接保证迁移后的效果。
 
 Memory 只作为 LLM 提出进化子代的 context，不自动将反事实公式加入替换候选。正向与负向实测证据均保留；LLM 自主决定如何利用证据，包括是否复现某个反事实编辑。只有 LLM 返回并通过验证、去重的 offspring 参与既定父因子替换。
 
@@ -422,7 +407,7 @@ $$
 
 根据机制证据同时提出完整排名等价的简化子代与质量改善子代，发现冗余不阻止探索。等价组保留最简版本后统一竞争，不另设细化或参数枚举阶段。
 
-在同一次演化调用中先返回 `updated_understanding`（最多三句）：对照诊断假设与实测证据，引用当前机制编号说明支持或推翻了什么、哪些结构承担什么作用、什么仍不确定。未测量时不能声称得到验证，实测信用不证明金融因果关系或迁移后有效。
+在同一次演化调用中先返回 `updated_understanding`（最多三句）：对照反事实推理假设与实测证据，引用当前机制编号说明支持或推翻了什么、哪些结构承担什么作用、什么仍不确定。未测量时不能声称得到验证，实测信用不证明金融因果关系或迁移后有效。
 
 返回格式为：
 
@@ -430,7 +415,7 @@ $$
 {"updated_understanding": "基于证据修正后的理解", "offspring": [{"expression": "完整公式", "evidence_refs": ["m1"], "description": "使用的理解、修改及待验证假设"}]}
 ```
 
-每个子代的 `description` 用 1–2 句话把理解连接到修改与新假设，`evidence_refs` 只能引用本次成功诊断的机制编号；负向证据也可引用。没有直接当前机制依据时用 `[]` 并明确是探索假设，历史证据可在描述中说明。没有子代也必须返回更新理解。程序校验字段与引用，理解、预测和引用均写入终端及既有日志/memory，不增加模型调用或评分项。
+每个子代的 `description` 用 1–2 句话把理解连接到修改与新假设，`evidence_refs` 只能引用本次成功反事实推理的机制编号；负向证据也可引用。没有直接当前机制依据时用 `[]` 并明确是探索假设，历史证据可在描述中说明。没有子代也必须返回更新理解。程序校验字段与引用，理解、预测和引用均写入终端及既有日志/memory，不增加模型调用或评分项。
 
 程序负责解析、验证、精确去重，并在 Train 上逐个评价；无效或重复子代直接跳过。
 
@@ -446,7 +431,7 @@ $$
 
 若没有不同信号组改善，parent 所在组保留最简代表；若它是更简单的子代则记录 equivalent_simplification，否则保留 parent。简化不再提前截断其他改善候选的竞争。每个 parent 最多替换一个原槽位，池容量不变；单成员池取 $D=1$。
 
-同轮诊断基于轮初池；随后按 parent 顺序生成、评价、即时替换，评分使用已包含本轮先前子代的实际池。无有效子代时保留 parent。
+同轮反事实推理基于轮初池；随后按 parent 顺序生成、评价、即时替换，评分使用已包含本轮先前子代的实际池。无有效子代时保留 parent。
 
 ### 演化路径与可追溯性
 
@@ -509,11 +494,11 @@ $$
 
 使用原有 cn_data_rolling / us_data_qlib_latest，Test 为 2023-05-01–2026-04-30；保留 30 日未来缓冲以计算默认 20 日标签，缓冲不计入评价区间。
 
-演化中的 factor search、counterfactual diagnosis 与所有入池判断只使用 Train；Train 内部删除跨边界 horizon 标签，禁止未来引用；pool_credit 在完整 Train 上拟合与评价，不做内部时间切分。初始池另在离线脚本中比较方案：Train 决定候选质量、结构和相关性，2022 Validation 仅用于合格方案的收益择优，因此 2022 不再是未见样本。所有演化消融共用这一冻结的初始池。
+演化中的 factor search、counterfactual reasoning 与所有入池判断只使用 Train；Train 内部删除跨边界 horizon 标签，禁止未来引用；pool_credit 在完整 Train 上拟合与评价，不做内部时间切分。初始池另在离线脚本中比较方案：Train 决定候选质量、结构和相关性，2022 Validation 仅用于合格方案的收益择优，因此 2022 不再是未见样本。所有演化消融共用这一冻结的初始池。
 
-Validation / Test 切分由 `run_adaptive_combination.py` 按 `--train_end_year 2021` 内部处理，AlphaCME 不单独维护 valid 集合。
+Validation / Test 切分由 `run_adaptive_combination.py` 按 `--train_end_year 2021` 内部处理，AlphaCREAM 不单独维护 valid 集合。
 
-搜索完成后，最后一轮工作池直接交给原 `run_adaptive_combination.py`：
+初始化（round 0）及每轮保存后，工作池使用冻结的 Train OLS 权重交给 `run_adaptive_combination.py`，分别评价 Validation 和 Test，仅记录，不参与搜索决策。全部指标保存为 `pool_<round>.metrics.json` 并追加到 `res.txt`；`adaptive_combination.png` 展示两组 IC、RankIC、收益、ICIR、RankICIR、Sharpe 随轮次的变化，`profit_curves.png` 展示当前轮两组累计收益。最后一轮池直接作为最终池：
 
 $$
 P_G
@@ -557,22 +542,18 @@ $$
 
 ---
 
-# 初步实验设计
+# 实验设计
 
-主要 baseline：
+主实验覆盖 CSI300、CSI500、CSI1000；正文收益曲线只展示 CSI300，CSI500/CSI1000 收益曲线放附录；Alpha158、GP、AlphaGen、AlphaForge、AlphaQCM、AlphaSAGE、AlphaPROBE、AlphaAgent、AlphaCREAM。指标为 IC、ICIR、RIC、RICIR、AR、MDD、SR。
 
-- Random / GP Search；
-- AlphaGen；
-- AlphaSAGE；
-- LLM-based Evolution；
-- Counterfactual-Guided Evolution。
+消融实验仅在 CSI300 上进行；预测指标和组合回测指标合并在同一张表中。两组消融共享 Full，共 8 个版本：
+- 组件组：无反事实实测证据、无机制记忆、w/o pool-aware selection（β=0 且取消正信用门槛）。
+- 评分组：α=0、β=0、γ=0、λ=0；均保留录取门槛。β=0 保留正信用门槛，γ=0 保留相关性硬上限。
 
-主要消融：
 
-- w/o Counterfactual Diagnosis；
-- w/o Pool-Level Credit；
-- w/o Mechanism Memory；
-- 初始池离线比较不同配额与去相关强度；所有演化消融使用同一冻结的 50 因子池。
+`--no-pool-selection` 同时将 β 设为 0 并取消正信用门槛，保留反事实推理 pool 证据和父选择。旧 `--no-pool-credit` 仅兼容历史运行，不进入本次论文消融表。
+
+敏感性：CSI300 上分别将 α、β、γ、λ 设为各自默认值的 0.25/0.5/1/2/4 倍，其他权重保持默认值；零权重由消融覆盖。主实验表报告三个市场；消融仅报告 CSI300；CSI500/CSI1000 收益曲线放附录。论文采用 ARR 官方 ACL 模板，完整设置见 manuscript/www/PAPER_OUTLINE.md。
 
 ---
 

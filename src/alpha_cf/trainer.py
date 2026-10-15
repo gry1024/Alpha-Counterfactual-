@@ -1,4 +1,4 @@
-"""Diagnosis -> mechanism memory -> evolution -> pool update."""
+"""Counterfactual reasoning -> mechanism memory -> evolution -> pool update."""
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
@@ -11,7 +11,7 @@ import time
 
 from openai import APIConnectionError, APIStatusError, OpenAI
 from .expression import ablate, at, complexity, parse, walk
-from .prompt import PROMPT_HEAD, PROMPT_FEATURES_AND_OPERATORS, PROMPT_DIAGNOSIS, PROMPT_EVOLUTION
+from .prompt import PROMPT_HEAD, PROMPT_FEATURES_AND_OPERATORS, PROMPT_REASONING, PROMPT_EVOLUTION
 
 
 class LLMUnavailable(RuntimeError):
@@ -48,7 +48,7 @@ class AlphaCFTrainer:
         base_prompt = PROMPT_FEATURES_AND_OPERATORS + prompt.format(
             **{key: json.dumps(value, ensure_ascii=False) for key, value in context.items()})
         factor = context["parent"]
-        log_context = dict(task="diagnosis" if prompt == PROMPT_DIAGNOSIS else "evolution",
+        log_context = dict(task="reasoning" if prompt == PROMPT_REASONING else "evolution",
                            factor=factor if isinstance(factor, str) else factor["expression"])
         error = ""
         attempts = self.args.llm_attempts
@@ -103,19 +103,19 @@ class AlphaCFTrainer:
                     result = json.loads(block[1])
                 if not isinstance(result, dict):
                     raise ValueError("Model response must be a JSON object")
-                keys = ("mechanisms",) if prompt == PROMPT_DIAGNOSIS else ("offspring",)
+                keys = ("mechanisms",) if prompt == PROMPT_REASONING else ("offspring",)
                 if not all(isinstance(result.get(key), list) for key in keys):
                     raise ValueError(f"Expected required list fields: {', '.join(keys)}")
-                diagnosis = prompt == PROMPT_DIAGNOSIS
-                summary = "understanding" if diagnosis else "updated_understanding"
+                reasoning = prompt == PROMPT_REASONING
+                summary = "understanding" if reasoning else "updated_understanding"
                 if not isinstance(result.get(summary), str) or not result[summary].strip():
                     raise ValueError(f"Expected nonempty {summary}")
-                items = result["mechanisms" if diagnosis else "offspring"]
-                fields = ("description", "replacement", "reason") if diagnosis else ("expression", "description")
+                items = result["mechanisms" if reasoning else "offspring"]
+                fields = ("description", "replacement", "reason") if reasoning else ("expression", "description")
                 if len(items) > 5 or not all(isinstance(item, dict) and all(
                         isinstance(item.get(key), str) and item[key].strip() for key in fields) for item in items):
                     raise ValueError(f"Expected at most 5 items with nonempty {fields}")
-                if not diagnosis:
+                if not reasoning:
                     ids = {row["id"] for row in context["parent"]["mechanisms"]}
                     if not all(isinstance(child.get("evidence_refs"), list) and all(
                             isinstance(ref, str) and ref in ids for ref in child["evidence_refs"]) for child in items):
@@ -183,7 +183,7 @@ class AlphaCFTrainer:
             self.visits[str(expr)] += 1
         return selected
 
-    def diagnosis_context(self, parent):
+    def reasoning_context(self, parent):
         history = [] if self.args.no_memory else self.memory.get(self.chain_ids.get(str(parent)), [])
         previous = history[-1]["parent"] if history else {}
         return dict(parent=str(parent), reward=self.pool.evaluate(parent)["reward"],
@@ -192,19 +192,19 @@ class AlphaCFTrainer:
             cf_enabled=not self.args.no_cf_evidence,
             limits=dict(nodes=self.args.max_nodes, depth=self.args.max_depth, lookback=self.args.max_backtrack))
 
-    def diagnose(self, parent, utility, diagnosis=None):
+    def reason_about(self, parent, utility, reasoning=None):
         reward = self.pool.evaluate(parent)["reward"]
         print(f"> Parent {self.factor_ids[str(parent)]}: RankIC={reward:+.6f}, "
               f"nodes={complexity(parent)}, expr={parent}", flush=True)
-        if diagnosis is None:
-            diagnosis = self.ask(PROMPT_DIAGNOSIS, self.diagnosis_context(parent))
-        understanding = diagnosis["understanding"].strip()
+        if reasoning is None:
+            reasoning = self.ask(PROMPT_REASONING, self.reasoning_context(parent))
+        understanding = reasoning["understanding"].strip()
         self.record("understanding", factor=str(parent), understanding=understanding)
         print(f"  Understanding: {understanding}", flush=True)
         evidence = []
         index = next(i for i, e in enumerate(self.pool.exprs) if str(e) == str(parent))
         peers = self.pool.exprs[:index] + self.pool.exprs[index + 1:]
-        for i, mechanism in enumerate(diagnosis["mechanisms"], 1):
+        for i, mechanism in enumerate(reasoning["mechanisms"], 1):
             try:
                 node = at(parent, mechanism["path"])
                 row = dict(id=f"m{i}", factor=str(parent), expression=str(node),
@@ -238,7 +238,7 @@ class AlphaCFTrainer:
                 self.record("invalid_mechanism", factor=str(parent), proposal=mechanism, error=str(exc))
                 print(f"  Skip mechanism: {exc}", flush=True)
         measured = [row for row in evidence if row["delta_cf"] is not None]
-        print(f"  Diagnosed {len(evidence)} mechanisms, measured {len(measured)}", flush=True)
+        print(f"  Reasoned about {len(evidence)} mechanisms, measured {len(measured)}", flush=True)
         return dict(expression=str(parent), reward=reward, complexity=complexity(parent),
                     understanding=understanding, mechanisms=evidence)
 
@@ -253,6 +253,9 @@ class AlphaCFTrainer:
             historical_memory=factor_memory,
             existing_expressions=existing,
             correlation_threshold=self.args.correlation_threshold,
+            require_pool_credit=not getattr(self.args, "no_pool_selection", False),
+            score_weights=[self.args.alpha, 0.0 if getattr(self.args, "no_pool_selection", False)
+                           else self.args.beta, self.args.gamma, self.args.cost_weight],
             limits=dict(nodes=self.args.max_nodes, depth=self.args.max_depth, lookback=self.args.max_backtrack)))
         parent["updated_understanding"] = result["updated_understanding"].strip()
         parent["offspring"] = result["offspring"]
@@ -309,18 +312,18 @@ class AlphaCFTrainer:
             utility = self.pool.utility()
             print(f"=== Iteration {step}/{self.args.rounds}: {len(parents)} parents, OLS_U={utility:+.6f} ===", flush=True)
             evidence = []
-            contexts = [self.diagnosis_context(parent) for parent in parents]
-            with ThreadPoolExecutor(max_workers=self.args.diagnosis_workers) as executor:
-                requests = [executor.submit(self.ask, PROMPT_DIAGNOSIS, context) for context in contexts]
+            contexts = [self.reasoning_context(parent) for parent in parents]
+            with ThreadPoolExecutor(max_workers=self.args.reasoning_workers) as executor:
+                requests = [executor.submit(self.ask, PROMPT_REASONING, context) for context in contexts]
                 for i, (parent, request) in enumerate(zip(parents, requests), 1):
-                    print(f"[Diagnosis {i}/{len(parents)}]", flush=True)
+                    print(f"[Counterfactual reasoning {i}/{len(parents)}]", flush=True)
                     try:
-                        diagnosis = request.result()
+                        reasoning = request.result()
                     except LLMUnavailable as exc:
-                        self.record("llm_parent_skipped", task="diagnosis", factor=str(parent), error=str(exc))
-                        print(f"  Skip parent diagnosis; retained {parent}: {exc}", flush=True)
+                        self.record("llm_parent_skipped", task="reasoning", factor=str(parent), error=str(exc))
+                        print(f"  Skip parent reasoning; retained {parent}: {exc}", flush=True)
                         continue
-                    evidence.append((parent, self.diagnose(parent, utility, diagnosis)))
+                    evidence.append((parent, self.reason_about(parent, utility, reasoning)))
             previous_children, added = [], []
             for i, (parent_expr, parent) in enumerate(evidence, 1):
                 print(f"[Evolution {i}/{len(evidence)}]", flush=True)
