@@ -21,7 +21,7 @@ parent 与通过两个硬门槛的有效新子代统一竞争，先按完整有�
 
 每个组代表直接按 S=α|R|+βC_pool+γD+λ(1-C_cost) 评分，默认权重 5/800/2/2。不使用候选集合缩放；C_pool 使用完整 Train 的原始组合增益。
 
-评分消融 `--no-pool-selection` 将 β 置零并取消正信用门槛，其他逻辑不变；α/β/γ/λ 设零分别删除对应评分项，β=0 单独保留正信用门槛，γ=0 保留相关性门槛。
+选择机制消融 `--no-pool-selection`：从语法与结构合法且精确去重后的子代中均匀随机抽取一个，不计算未抽中子代的指标，不使用四项评分、相关性/正信用门槛或信号等价分组；仅抽中后检查数值可用性并为后续轮次计算指标，不因表现差拒绝。抽中者不可用或无新子代时保留父代，不重抽。保留反事实证据、记忆和父选择。日志包含每个候选的等概率、实际抽中公式、执行失败和 `selection_policy=uniform_random_v1`，不伪造未测量的评分；旧版消融结果不能混用。评分消融中，α/β/γ/λ 设零分别删除对应评分项，β=0 单独保留正信用门槛，γ=0 保留相关性门槛。
 
 不同信号组必须严格高于 parent 所在组代表的 S 才能替换，取最高分者；分数相同先取较低 complexity，再保持原顺序。若没有不同信号组改善，parent 所在组仍保留最简公式。选中 parent 组的更简子代记 equivalent_simplification，其他改善记 score_improvement。简化不提前截断改善竞争。
 
@@ -29,7 +29,7 @@ parent 与通过两个硬门槛的有效新子代统一竞争，先按完整有�
 
 ## 日志与产物
 
-每个 parent 写 replacement 事件及 lineage，包含候选的 reward、complexity、
+正常选择模式下，每个 parent 写 replacement 事件及 lineage，包含候选的 reward、complexity、
 max_correlation、signal_distance、pool_credit、cost、score、correlation_ok、credit_ok、eligible、description，以及 representative（是否为等价组代表）、parent_score、parent_group_score、parent_components、reason 和最终 replaced/retained 结果。
 入池子代另保存 child_description，保留时为 null；描述只用于解释和追溯，不参与数值筛选。
 全无有效子代时仍记录 retained，继续训练，不因空轮报错。
@@ -41,6 +41,10 @@ max_correlation、signal_distance、pool_credit、cost、score、correlation_ok�
 初始化及每轮保存时打印完整池的 factor ID、signed RankIC、|R|、cost、complexity、OLS 权重、表达式，以及最佳/平均 |R|、组合 U、memory 数量和保存路径。搜索与池更新只使用 Train 指标；每轮另行打印 Validation/Test 回测指标。
 
 最终 `pool_<rounds>.json` 即最终池，split=train。
-`train_cf.py` 在初始化（round 0）及每轮保存后调用 `run_adaptive_combination.py`，使用冻结的 Train OLS 权重同时评价 Validation/Test，仅记录，不参与搜索决策。每轮指标保存为 `pool_<round>.metrics.json` 并追加到 `res.txt`。`adaptive_combination.png` 绘制两组 IC、RankIC、收益、ICIR、RankICIR、Sharpe 随轮次变化；`profit_curves.png` 绘制当前轮两组累计收益。Validation 日收益和日期保存为 `valid_ret_s.npy`、`valid_ret_s_dates.npy`，Test 保持 `ret_s.npy`、`ret_s_dates.npy`。
+`train_cf.py` 在初始化（round 0）及每轮保存后调用 `run_adaptive_combination.py`，使用冻结的 Train OLS 权重同时评价 Validation/Test，仅记录，不参与搜索决策。每轮指标保存为 `pool_<round>.metrics.json` 并追加到 `res.txt`。`adaptive_combination.png` 仅绘制 Test 的全部 11 项指标随轮次变化（IC、RankIC、收益、ICIR、RankICIR、Sharpe、三项标准差、RETIR、最大回撤）；`profit_curves.png` 仅绘制当前轮 Test 累计收益。Validation 日收益和日期保存为 `valid_ret_s.npy`、`valid_ret_s_dates.npy`，Test 保持 `ret_s.npy`、`ret_s_dates.npy`。
 Validation/Test 切分由原脚本内部按 `--train_end_year 2021` 处理，AlphaCREAM 不再单独维护 valid。Test 范围为 2023.05.01–2026.04.30。
 `--test-only` 仍可用保存池复跑最终回测。
+
+AlphaKnowledge 每轮保存后也调用 `run_adaptive_combination.py`（`use_weights=False`，默认 `n_factors=20`）；每轮指标存为 `pool_<round>.metrics.json`，Test 指标带轮次追加到 `test_metrics.jsonl`，复用 `src/alpha_cf/plot.py` 仅画 Test 的 11 项指标。历史重画以 pool 文件名中的轮次为准，不从无轮次的旧 `res.txt` 推断。
+
+`--llm-only` 是独立的最低条件配置：自动开启 `--no-cf-evidence --no-pool-credit --no-memory --no-pool-selection`，另外均匀随机选择父代，不使用删除信用；LLM 的父代 RankIC 设为 null，不提供任何历史评分/录取反馈。仍保留当前公式、AST、算子说明、结构限制与 LLM 自己提出的未测量机制；子代均匀随机替换。初始池和抽中因子的数值可用性检查、OLS 权重及 Validation/Test 报告仍执行，但结果不参与生成或选择。日志标记 `search_policy=llm_only_v1`。这是多组件联合移除的最低条件对照，不用于单独归因某一个组件。

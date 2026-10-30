@@ -9,9 +9,10 @@ import random
 import re
 import time
 
-from openai import APIConnectionError, APIStatusError, OpenAI
+import httpx
+from openai import APIConnectionError, APIError, APIStatusError, OpenAI
 from .expression import ablate, at, complexity, parse, walk
-from .prompt import PROMPT_HEAD, PROMPT_FEATURES_AND_OPERATORS, PROMPT_REASONING, PROMPT_EVOLUTION
+from .prompt import PROMPT_HEAD, PROMPT_FEATURES_AND_OPERATORS, PROMPT_REASONING, PROMPT_EVOLUTION, SELECTION_SCORED, SELECTION_RANDOM
 
 
 class LLMUnavailable(RuntimeError):
@@ -35,7 +36,8 @@ class AlphaCFTrainer:
         self.client = self.model = None
         if args.rounds:
             self.client = OpenAI(api_key=os.environ["OPENAI_API_KEY"], base_url=os.environ["OPENAI_BASE_URL"],
-                                 timeout=args.llm_timeout, max_retries=0)
+                                 timeout=args.llm_timeout, max_retries=0,
+                                 http_client=httpx.Client(timeout=args.llm_timeout))
             self.model = os.environ["OPENAI_MODEL_NAME"]
         self.step = 0
         self.log_lock = Lock()
@@ -46,7 +48,8 @@ class AlphaCFTrainer:
 
     def ask(self, prompt, context):
         base_prompt = PROMPT_FEATURES_AND_OPERATORS + prompt.format(
-            **{key: json.dumps(value, ensure_ascii=False) for key, value in context.items()})
+            **{key: value if key == "selection_policy" else json.dumps(value, ensure_ascii=False)
+               for key, value in context.items()})
         factor = context["parent"]
         log_context = dict(task="reasoning" if prompt == PROMPT_REASONING else "evolution",
                            factor=factor if isinstance(factor, str) else factor["expression"])
@@ -57,20 +60,38 @@ class AlphaCFTrainer:
                 "Correct that error. Return only a valid JSON object matching the required schema, "
                 "without control characters or thinking text." if error else "")
             timeout = self.args.llm_timeout * min(attempt, 2)
+            max_tokens = getattr(self.args, "llm_max_tokens", 16384)
             self.record("llm_request", attempt=attempt, **log_context, started_at=time.time(),
-                        timeout_seconds=timeout, prompt_chars=len(PROMPT_HEAD) + len(user_prompt),
+                        timeout_seconds=timeout, max_tokens=max_tokens, prompt_chars=len(PROMPT_HEAD) + len(user_prompt),
                         system_prompt=PROMPT_HEAD, user_prompt=user_prompt)
             started = time.monotonic()
             try:
-                response = self.client.chat.completions.create(model=self.model,
+                parts, finish_reason, reasoning_chars = [], None, 0
+                with self.client.chat.completions.create(model=self.model,
                     messages=[dict(role="system", content=PROMPT_HEAD), dict(role="user", content=user_prompt)],
-                    temperature=self.args.temperature, top_p=1, timeout=timeout)
-            except (APIConnectionError, APIStatusError) as exc:
-                retryable = isinstance(exc, APIConnectionError) or exc.status_code in (408, 409, 429) or exc.status_code >= 500
+                    temperature=self.args.temperature, top_p=1, max_tokens=max_tokens, timeout=timeout, stream=True) as stream:
+                    for chunk in stream:
+                        for choice in chunk.choices:
+                            if choice.delta.content:
+                                parts.append(choice.delta.content)
+                            reasoning_chars += len(getattr(choice.delta, "reasoning_content", None) or "")
+                            finish_reason = choice.finish_reason or finish_reason
+                    if finish_reason is None:
+                        raise APIConnectionError(message="Stream ended without a finish reason",
+                                                 request=stream.response.request)
+                text = "".join(parts)
+            except (APIError, httpx.TransportError) as exc:
+                retryable = not isinstance(exc, APIStatusError) or exc.status_code in (408, 409, 429) or exc.status_code >= 500
                 label = type(exc).__name__ + (f" (HTTP {exc.status_code})" if isinstance(exc, APIStatusError) else "")
+                detail = str(exc.__cause__ or exc)
+                if getattr(exc, "body", None):
+                    detail += ": " + json.dumps(exc.body, ensure_ascii=False, default=str)
+                key = os.environ.get("OPENAI_API_KEY")
+                if key:
+                    detail = detail.replace(key, "[REDACTED]")
                 self.record("llm_error", attempt=attempt, **log_context, error=label,
-                            retryable=retryable, elapsed_seconds=time.monotonic() - started)
-                print(f"  LLM request failed (attempt {attempt}/{attempts}, timeout={timeout}s): {label}", flush=True)
+                            error_detail=detail, retryable=retryable, elapsed_seconds=time.monotonic() - started)
+                print(f"  LLM request failed (attempt {attempt}/{attempts}, timeout={timeout}s): {label}: {detail}", flush=True)
                 if not retryable:
                     raise
                 if attempt == attempts:
@@ -87,10 +108,13 @@ class AlphaCFTrainer:
                 print(f"  Retrying in {delay:.1f}s", flush=True)
                 time.sleep(delay)
                 continue
-            text, finish_reason = response.choices[0].message.content, response.choices[0].finish_reason
             self.record("llm_response", attempt=attempt, **log_context,
-                        elapsed_seconds=time.monotonic() - started, response=text, finish_reason=finish_reason)
+                        elapsed_seconds=time.monotonic() - started, response=text, finish_reason=finish_reason,
+                        content_chars=len(text), reasoning_chars=reasoning_chars, max_tokens=max_tokens)
             try:
+                if finish_reason == "length":
+                    raise ValueError(f"Model reached its output token limit ({max_tokens}) before completing JSON; "
+                                     "increase --llm-max-tokens")
                 text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S).strip()
                 if not text:
                     raise ValueError("Model response is empty after removing thinking content")
@@ -128,9 +152,12 @@ class AlphaCFTrainer:
                 if attempt == attempts:
                     raise
 
-    def evaluate(self, text):
+    def evaluate(self, text, measure=True):
         try:
             expr = parse(text, self.args)
+            if not measure:
+                self.record("candidate", expression=str(expr), measured=False)
+                return expr
             result = self.pool.evaluate(expr)
             self.record("factor", expression=str(expr), **{k: v for k, v in result.items() if k != "signal"})
             print(f"> Evaluated: RankIC={result['reward']:+.6f}, |R|={abs(result['reward']):.6f}, "
@@ -166,12 +193,16 @@ class AlphaCFTrainer:
     def select_parents(self):
         exprs = self.pool.exprs
         count = min(self.args.parents, len(exprs))
-        utility = self.pool.utility()
-        contributions = [utility - self.pool.utility(exprs[:i] + exprs[i + 1:])
-                         for i in range(len(exprs))]
-        low_pool = sorted(range(len(exprs)), key=lambda i: contributions[i])[:(len(exprs) + 1) // 2]
-        low = random.sample(low_pool, count // 2)
-        selected_indices = low + random.sample([i for i in range(len(exprs)) if i not in low], count - len(low))
+        if getattr(self.args, "llm_only", False):
+            utility, contributions, low = None, [None] * len(exprs), []
+            selected_indices = random.sample(range(len(exprs)), count)
+        else:
+            utility = self.pool.utility()
+            contributions = [utility - self.pool.utility(exprs[:i] + exprs[i + 1:])
+                             for i in range(len(exprs))]
+            low_pool = sorted(range(len(exprs)), key=lambda i: contributions[i])[:(len(exprs) + 1) // 2]
+            low = random.sample(low_pool, count // 2)
+            selected_indices = low + random.sample([i for i in range(len(exprs)) if i not in low], count - len(low))
         random.shuffle(selected_indices)
         selected = [exprs[i] for i in selected_indices]
         self.record("parent_selection", utility=utility, parents=[str(e) for e in selected],
@@ -186,15 +217,16 @@ class AlphaCFTrainer:
     def reasoning_context(self, parent):
         history = [] if self.args.no_memory else self.memory.get(self.chain_ids.get(str(parent)), [])
         previous = history[-1]["parent"] if history else {}
-        return dict(parent=str(parent), reward=self.pool.evaluate(parent)["reward"],
+        return dict(parent=str(parent), reward=(None if getattr(self.args, "llm_only", False)
+                                               else self.pool.evaluate(parent)["reward"]),
             previous_understanding={k: previous[k] for k in ("expression", "updated_understanding") if k in previous},
             nodes=[dict(path=p, expression=str(n)) for p, n in walk(parent)],
             cf_enabled=not self.args.no_cf_evidence,
             limits=dict(nodes=self.args.max_nodes, depth=self.args.max_depth, lookback=self.args.max_backtrack))
 
     def reason_about(self, parent, utility, reasoning=None):
-        reward = self.pool.evaluate(parent)["reward"]
-        print(f"> Parent {self.factor_ids[str(parent)]}: RankIC={reward:+.6f}, "
+        reward = None if getattr(self.args, "llm_only", False) else self.pool.evaluate(parent)["reward"]
+        print(f"> Parent {self.factor_ids[str(parent)]}: RankIC={metric(reward)}, "
               f"nodes={complexity(parent)}, expr={parent}", flush=True)
         if reasoning is None:
             reasoning = self.ask(PROMPT_REASONING, self.reasoning_context(parent))
@@ -252,10 +284,10 @@ class AlphaCFTrainer:
         result = self.ask(PROMPT_EVOLUTION, dict(parent=parent,
             historical_memory=factor_memory,
             existing_expressions=existing,
-            correlation_threshold=self.args.correlation_threshold,
-            require_pool_credit=not getattr(self.args, "no_pool_selection", False),
-            score_weights=[self.args.alpha, 0.0 if getattr(self.args, "no_pool_selection", False)
-                           else self.args.beta, self.args.gamma, self.args.cost_weight],
+            selection_policy=(SELECTION_RANDOM if self.args.no_pool_selection else
+                SELECTION_SCORED.format(correlation_threshold=self.args.correlation_threshold,
+                    require_pool_credit=True,
+                    score_weights=[self.args.alpha, self.args.beta, self.args.gamma, self.args.cost_weight])),
             limits=dict(nodes=self.args.max_nodes, depth=self.args.max_depth, lookback=self.args.max_backtrack)))
         parent["updated_understanding"] = result["updated_understanding"].strip()
         parent["offspring"] = result["offspring"]
@@ -270,19 +302,21 @@ class AlphaCFTrainer:
             self.record("proposal", parent=parent["expression"],
                         parent_id=self.factor_ids[parent["expression"]],
                         expression=text, description=description, evidence_refs=proposal["evidence_refs"])
-            child = self.evaluate(text)
+            child = self.evaluate(text, measure=not self.args.no_pool_selection)
             if child is not None and str(child) not in seen:
                 children.append(child)
                 details[str(child)] = dict(description=description, evidence_refs=proposal["evidence_refs"])
                 seen.add(str(child))
             elif child is not None:
                 print(f"  Skip duplicate offspring: {child}", flush=True)
-        print(f"  Evaluated {len(children)} new offspring", flush=True)
+        print(f"  Collected {len(children)} new offspring", flush=True)
         return children, details
 
     def save(self):
         payload = self.pool.to_dict()
         payload["split"] = "train"
+        payload["search_policy"] = "llm_only_v1" if getattr(self.args, "llm_only", False) else "counterfactual_v1"
+        payload["selection_policy"] = "uniform_random_v1" if self.args.no_pool_selection else "scored_v1"
         payload["factor_ids"] = [self.factor_ids[str(e)] for e in self.pool.exprs]
         payload["chain_ids"] = [self.chain_ids[str(e)] for e in self.pool.exprs]
         payload["visits"] = dict(self.visits)
@@ -309,8 +343,8 @@ class AlphaCFTrainer:
             self.step = step
             started = time.monotonic()
             parents = self.select_parents()
-            utility = self.pool.utility()
-            print(f"=== Iteration {step}/{self.args.rounds}: {len(parents)} parents, OLS_U={utility:+.6f} ===", flush=True)
+            utility = None if getattr(self.args, "llm_only", False) else self.pool.utility()
+            print(f"=== Iteration {step}/{self.args.rounds}: {len(parents)} parents, OLS_U={metric(utility)} ===", flush=True)
             evidence = []
             contexts = [self.reasoning_context(parent) for parent in parents]
             with ThreadPoolExecutor(max_workers=self.args.reasoning_workers) as executor:
@@ -335,16 +369,24 @@ class AlphaCFTrainer:
                     continue
                 previous_children.extend(str(child) for child in children)
                 decision = self.pool.replace_parent(parent_expr, children)
-                print(f"> Parent score: S={decision['parent_score']:.6f}, "
-                      f"group_S={decision['parent_group_score']:.6f}, "
-                      f"RankIC={decision['parent_reward']:+.6f}, nodes={decision['parent_complexity']}", flush=True)
                 for candidate in decision["candidates"]:
                     candidate.update(details[candidate["expression"]])
-                    status = "selected" if candidate['expression'] == decision['child'] else "not selected" if candidate['eligible'] else "not eligible"
-                    print(f"  > Candidate ({status}): RankIC={candidate['reward']:+.6f}, nodes={candidate['complexity']}, "
-                          f"max_corr={candidate['max_correlation']:.6f}, correlation_ok={candidate['correlation_ok']}, credit_ok={candidate['credit_ok']}, distance={metric(candidate['signal_distance'])}, "
-                          f"C_pool={candidate['pool_credit']:+.6f}, cost={candidate['cost']:.6f}, "
-                          f"S={candidate['score']:.6f}, expr={candidate['expression']}", flush=True)
+                if self.args.no_pool_selection:
+                    print(f"> Uniform random draw: {decision['drawn_child']}; "
+                          f"outcome={decision['reason']}; error={decision['evaluation_error']}", flush=True)
+                    for candidate in decision["candidates"]:
+                        print(f"  > Candidate: p={candidate['selection_probability']:.4f}, "
+                              f"drawn={candidate['drawn']}, expr={candidate['expression']}", flush=True)
+                else:
+                    print(f"> Parent score: S={decision['parent_score']:.6f}, "
+                          f"group_S={decision['parent_group_score']:.6f}, "
+                          f"RankIC={decision['parent_reward']:+.6f}, nodes={decision['parent_complexity']}", flush=True)
+                    for candidate in decision["candidates"]:
+                        status = "selected" if candidate['expression'] == decision['child'] else "not selected" if candidate['eligible'] else "not eligible"
+                        print(f"  > Candidate ({status}): RankIC={candidate['reward']:+.6f}, nodes={candidate['complexity']}, "
+                              f"max_corr={candidate['max_correlation']:.6f}, correlation_ok={candidate['correlation_ok']}, credit_ok={candidate['credit_ok']}, distance={metric(candidate['signal_distance'])}, "
+                              f"C_pool={candidate['pool_credit']:+.6f}, cost={candidate['cost']:.6f}, "
+                              f"S={candidate['score']:.6f}, expr={candidate['expression']}", flush=True)
                 if decision['child'] is not None:
                     print(f"[Pool Pop] {decision['parent']}\n[Pool Add] {decision['child']}\n"
                           f"  Replacement reason: {decision['reason']}", flush=True)

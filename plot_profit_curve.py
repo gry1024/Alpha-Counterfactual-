@@ -5,11 +5,11 @@ plot_profit_curve.py — cumulative-return curves from `ret_s.npy` files.
 from __future__ import annotations
 
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-import seaborn as sns
+from matplotlib.ticker import AutoMinorLocator, MaxNLocator
 
 
 # ---------------------------------------------------------------------------
@@ -20,11 +20,11 @@ RUNS: dict = {
     "csi300": {
         "LightGBM": "data/lightgbm_logs/csi300/ret_s.npy",
         "XGBoost": "data/xgboost_logs/csi300/ret_s.npy",
-        "Alpha158": "data/alpha158_logs/csi300_equal_weight/ret_s.npy",
+        "Alpha158": "data/alpha158_logs/csi300/ret_s.npy",
         "GP": "data/gp_logs/csi300_seed_0/ret_s.npy",
         "AlphaQCM": "data/qcm_logs/csi300_qrdqn_seed0/ret_s.npy",
         "AlphaSAGE": {"path": "data/gfn_logs/pool_50/gfn_gnn_csi300_50_2-0.01-1.0-1.0-1.0-0.3-linear-0.0/ret_s.npy", "data_start_date": "2023-05-01"},
-        "AlphaPROBE": {"path": "data/knowledge_logs/pool_50/kg_dag_and_bayesian_icir_and_mutl_new_no_decay_MiniMax-M3_5_csi300_0.5_7_50_0.9_50_20_0.006_True_True_False_True_0.7_0.1_0.05/ret_s.npy", "data_start_date": "2023-05-01"},
+        "AlphaPROBE": {"path": "data/knowledge_logs/pool_50/kg_dag_and_bayesian_icir_and_mutl_new_no_decay_MiniMax-M3_5_csi300_0.5_7_50_0.9_50_20_0.006_True_True_False_True_0.7_0.1_0.05/adaptive_n20/round_20/ret_s.npy", "data_start_date": "2023-05-01"},
         "AlphaGen": {"path": "data/ppo_logs/pool_20/ppo_csi300_20_0-20260905132532/ppo_csi300_20_0_20260905132532/ret_s.npy", "data_start_date": "2023-05-01"},
         "Ours": {"path": "data/cf_logs/20261013_225346_506634_csi300_0_MiniMax-M3/ret_s.npy", "data_start_date": "2023-05-01"},
 
@@ -61,9 +61,9 @@ RUNS: dict = {
         "GP": "data/gp_logs/csi1000_seed_0/ret_s.npy",
         "AlphaQCM": "data/qcm_logs/csi1000_qrqdn_seed0/ret_s.npy",
         "AlphaSAGE": "data/gfn_logs/pool_50/gfn_gnn_csi1000_50_0-0.01-1.0-1.0-1.0-0.3-linear-0.0/ret_s.npy",
-        "AlphaPROBE": None,
+        "AlphaPROBE": "data/knowledge_logs/pool_50/kg_dag_and_bayesian_icir_and_mutl_new_no_decay_gd-mobile-deepseek-v4.1-flash-1017_5_csi1000_0.5_7_50_0.9_50_20_0.006_True_True_False_True_0.7_0.1_0.05/ret_s.npy",
         "AlphaGen": "data/ppo_logs/pool_20/ppo_csi1000_20_0-20261014201645/ppo_csi1000_20_0_20261014201645/ret_s.npy",
-        "Ours": "data/cf_logs/20261015_062123_202538_csi1000_0_MiniMax-M3/ret_s.npy",
+        "Ours": "data/cf_logs/20261024_224833_312713_csi1000_0_gd-mobile-deepseek-v4.1-flash-1017/ret_s.npy",
         "CSI1000 Index": {
             "path": "data/index_real_logs/pool_all/real_csi1000/ret_s.npy",
             "color": "#000000",
@@ -73,26 +73,52 @@ RUNS: dict = {
     },
 }
 
-# 2) Palette — muted tones reminiscent of `img/backtest.png`.
+# 2) AlphaSAGE-inspired palette (`img/backtest.png`), with Ours in muted red.
 PALETTE: dict[str, str] = {
     "CSI300 Index": "#000000",
     "CSI500 Index": "#000000",
     "CSI1000 Index": "#000000",
-    "LightGBM":   "#AAB8D0",
-    "XGBoost":    "#C28CB8",
-    "GP":         "#8172B3",
-    "AlphaQCM":   "#937860",
-    "Alpha158":   "#4C72B0",  # steel blue
-    "AlphaSAGE":  "#2E8B57",  # sea green
-    "AlphaPROBE": "#E07B5A",  # muted coral
-    "AlphaGen":   "#82B366",  # light green
-    "Ours":    "#FF0000",  # red
+    "LightGBM":   "#F47772",
+    "XGBoost":    "#D9C2DF",
+    "GP":         "#B182BA",
+    "AlphaQCM":   "#7DCFF0",
+    "Alpha158":   "#4B92CD",
+    "AlphaSAGE":  "#429E9B",
+    "AlphaPROBE": "#E6AE46",
+    "AlphaGen":   "#7CC5A1",
+    "Ours":       "#C8324A",
+}
+LEGEND_ORDER = ("Ours", "AlphaSAGE", "AlphaPROBE", "AlphaGen", "AlphaQCM",
+                "Alpha158", "GP", "XGBoost", "LightGBM")
+
+# Apply locally so importing this script does not restyle other figures.
+PLOT_STYLE = {
+    "font.family": "serif",
+    "font.serif": ["Times New Roman", "Nimbus Roman", "Liberation Serif", "DejaVu Serif"],
+    "font.size": 13,
+    "axes.titlesize": 15,
+    "axes.labelsize": 16,
+    "axes.labelpad": 9,
+    "axes.edgecolor": "#333333",
+    "axes.linewidth": 0.8,
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "axes.facecolor": "white",
+    "figure.facecolor": "white",
+    "xtick.labelsize": 12,
+    "ytick.labelsize": 12,
+    "xtick.color": "#333333",
+    "ytick.color": "#333333",
+    "axes.axisbelow": True,
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42,
 }
 
 # 3) Plot knobs.
 DEFAULT_START_DATE = "2023-05-01"
 DEFAULT_END_DATE = "2026-04-30"
-LINEWIDTH = 1.6
+LINEWIDTH = 2.1
+SMOOTH_WINDOW = 7  # Trading days; set to 1 to display the raw curve.
 
 # Real trading calendar (identical to the one the cn backtests use).  All
 # series are indexed against this so holidays line up correctly.
@@ -157,28 +183,20 @@ def _parse_spec(spec):
     raise ValueError(f"Unsupported spec: {spec!r}")
 
 
+def _smooth_curve(values: np.ndarray) -> np.ndarray:
+    """Centered triangular average for display only; preserve both endpoints."""
+    smoothed = np.empty_like(values)
+    for i in range(len(values)):
+        radius = min(SMOOTH_WINDOW // 2, i, len(values) - 1 - i)
+        weights = SMOOTH_WINDOW // 2 + 1 - np.abs(np.arange(-radius, radius + 1))
+        smoothed[i] = np.average(values[i - radius:i + radius + 1], weights=weights)
+    return smoothed
+
+
+@plt.rc_context(PLOT_STYLE)
 def plot_market(market: str, runs: dict, here: Path, calendar: list[datetime], output_name: str | None = None) -> None:
-
-    sns.set_style("whitegrid")
-    sns.set_context("notebook", rc={
-        "font.family": "serif",
-        "font.size": 11,
-        "axes.titlesize": 11,
-        "axes.labelsize": 11,
-        "xtick.labelsize": 9,
-        "ytick.labelsize": 9,
-        "legend.fontsize": 9,
-        "axes.linewidth": 0.8,
-        "axes.edgecolor": "#444",
-        "grid.color": "#cccccc",
-        "grid.linestyle": "--",
-        "grid.linewidth": 0.7,
-        "grid.alpha": 0.6,
-    })
-
-    fig, ax = plt.subplots(figsize=(6.0, 6.0), dpi=240)
-    fig.subplots_adjust(left=0.17, right=0.95, bottom=0.13, top=0.94)
-    ax.set_box_aspect(1)
+    fig, ax = plt.subplots(figsize=(10.8, 5.6), dpi=300)
+    fig.subplots_adjust(left=0.085, right=0.96, bottom=0.15, top=0.975)
 
     summary: list[tuple[str, int, float, float, float]] = []
     for name, raw_spec in runs.items():
@@ -215,47 +233,54 @@ def plot_market(market: str, runs: dict, here: Path, calendar: list[datetime], o
         cum = _normalize_to_one(ret)
         ax.plot(
             dates,
-            cum,
-            color=PALETTE[name],
+            _smooth_curve(cum),
+            color=cfg.get("color", PALETTE[name]),
             linestyle=cfg.get("linestyle", "-"),
-            linewidth=cfg.get("linewidth", LINEWIDTH),
+            linewidth=cfg.get("linewidth", 2.7 if name == "Ours" else LINEWIDTH),
             label=cfg.get("label", name) + (" (partial)" if partial else ""),
             solid_capstyle="round",
+            zorder=4 if name == "Ours" else 3 if "Index" in name else 2,
         )
         summary.append((name, len(ret), float(ret.mean()), float(ret.std()), float(cum[-1])))
 
     if not summary:
         raise SystemExit("No series plotted — check the paths in RUNS.")
 
-    # Keep all methods inside the upper-left corner as the baseline list grows.
-    ax.legend(loc="upper left", ncol=2, frameon=True, framealpha=0.9,
-              facecolor="white", edgecolor="none", handlelength=1.5, handletextpad=0.4,
-              columnspacing=0.9, labelspacing=0.35, fontsize=8)
-    ax.set_title(market.upper(), pad=8, fontsize=12)
-    # Always label both Test boundaries; sparse interior ticks keep the square compact.
+    # Keep a fixed method order across markets, with the index last.
+    handles, labels = ax.get_legend_handles_labels()
+    order = sorted(range(len(summary)), key=lambda i: LEGEND_ORDER.index(summary[i][0])
+                   if summary[i][0] in LEGEND_ORDER else len(LEGEND_ORDER))
+    legend = ax.legend([handles[i] for i in order], [labels[i] for i in order],
+                       loc="upper left", ncol=3, frameon=True, framealpha=0.94,
+                       facecolor="white", edgecolor="#D8D8D8", borderpad=0.6,
+                       handlelength=2.4, handletextpad=0.65, columnspacing=1.5,
+                       labelspacing=0.4, fontsize=11.5)
+    for label in legend.get_texts():
+        if label.get_text() == "Ours" or label.get_text().startswith("Ours ("):
+            label.set_weight("bold")
+    # Follow AlphaSAGE/AlphaPROBE: calendar-month starts every four months.
     test_start = datetime.fromisoformat(DEFAULT_START_DATE)
     test_end = datetime.fromisoformat(DEFAULT_END_DATE)
-    interior = [datetime(year, 7, 1) for year in range(test_start.year + 1, test_end.year)
-                if test_start < datetime(year, 7, 1) < test_end]
-    ticks = [test_start, *interior, test_end]
-    ax.set_xticks(ticks)
-    ax.set_xticklabels([ticks[0].strftime("%Y-%m-%d"),
-                        *[d.strftime("%Y-%m") for d in interior],
-                        ticks[-1].strftime("%Y-%m-%d")])
-    ax.get_xticklabels()[0].set_horizontalalignment("left")
-    ax.get_xticklabels()[-1].set_horizontalalignment("right")
+    ax.xaxis.set_major_locator(mdates.MonthLocator(bymonth=[1, 5, 9], bymonthday=1))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    ax.xaxis.set_minor_locator(mdates.MonthLocator())
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
+    ax.yaxis.set_minor_locator(AutoMinorLocator(4))
+    ax.tick_params(which="major", bottom=True, left=True, length=4, width=0.8, direction="out")
+    ax.tick_params(which="minor", bottom=True, left=True, length=2, width=0.5, direction="out")
     ax.set_xlabel("Date")
     ax.set_ylabel("Cumulative Return")
-    ax.set_xlim(datetime.fromisoformat(DEFAULT_START_DATE), datetime.fromisoformat(DEFAULT_END_DATE))
-    ax.grid(axis="x", visible=False)
+    ax.set_xlim(test_start - timedelta(days=12), test_end + timedelta(days=12))
+    ax.grid(which="major", color="#DCDCDC", linestyle="--", linewidth=0.7)
+    ax.grid(which="minor", color="#EEEEEE", linestyle=":", linewidth=0.55)
 
     # Y-limits with headroom.
     ymin, ymax = ax.get_ylim()
-    pad = max(0.05, 0.10 * (ymax - ymin))
-    ax.set_ylim(ymin - pad, ymax + pad)
+    pad = max(0.04, 0.08 * (ymax - ymin))
+    ax.set_ylim(ymin - 0.3 * pad, ymax + pad)
 
     out_path = (here / (output_name or f"profit_curve_{market}.png")).resolve()
-    fig.savefig(out_path, dpi=240)
+    fig.savefig(out_path, dpi=300)
     fig.savefig(out_path.with_suffix(".pdf"))
     plt.close(fig)
     print(f"[ok] saved {out_path}")

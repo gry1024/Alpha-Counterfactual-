@@ -45,13 +45,17 @@ async def dispatch_openai_chat_requests(
 
 
 class OpenAIModel:
-    def __init__(self, model_name, stop_words, max_new_tokens) -> None:
+    def __init__(self, model_name, stop_words, max_new_tokens, request_max_tokens=None) -> None:
         self.model_name = model_name
         self.stop_words = stop_words
         self.max_new_tokens = max_new_tokens
+        self.request_max_tokens = request_max_tokens
 
     @retry(stop_max_attempt_number=10, wait_fixed=2000)
     def chat_generate(self, client, system_prompt:str, user_prompt:str, temperature = 0.0):
+        request_options = {}
+        if self.request_max_tokens is not None:
+            request_options['max_tokens'] = self.request_max_tokens
         response = completions_with_backoff(
                 client,
                 model = self.model_name,
@@ -61,10 +65,19 @@ class OpenAIModel:
                     ],
                 temperature = temperature,
                 top_p = 1,
-                stop = self.stop_words
+                stop = self.stop_words,
+                **request_options
         )
-        generated_text = response.choices[0].message.content.strip()
+        generated_text = (response.choices[0].message.content or '').strip()
         finish_reason = response.choices[0].finish_reason
+        if self.request_max_tokens is not None:
+            if finish_reason == 'length':
+                raise ValueError('Model output truncated; increase OPENAI_MAX_TOKENS')
+            if not generated_text:
+                raise ValueError('Model returned empty answer content; reasoning alone is not an answer')
+            reasoning = getattr(response.choices[0].message, 'reasoning_content', None) or ''
+            print(f'[llm] finish_reason={finish_reason}, content_chars={len(generated_text)}, '
+                  f'reasoning_chars={len(reasoning)}', flush=True)
         return generated_text, finish_reason
 
     def generate(self, client, input_string, temperature = 0.0):

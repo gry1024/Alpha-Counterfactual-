@@ -21,7 +21,7 @@ for seed in seeds:
 pool.initialize(candidates)   # 校验数量/规范公式唯一性；保持全部成员与原顺序
 ```
 
-默认 `pool_capacity=50`，自定义池也须与该容量完全匹配。种子不可用、规范化后重复或数量错误均报错，禁止静默缩小工作池。初始化不翻转符号；外层 `Sub(0.0,f)` 是否添加仍由 LLM 在演化时决定。离线未选因子不进入搜索。`AlphaCFPool.select` 及 `--no-pool-selection` 已删除，父因子替换评分保留。
+默认 `pool_capacity=50`，自定义池也须与该容量完全匹配。种子不可用、规范化后重复或数量错误均报错，禁止静默缩小工作池。初始化不翻转符号；外层 `Sub(0.0,f)` 是否添加仍由 LLM 在演化时决定。离线未选因子不进入搜索。旧初始化接口 `AlphaCFPool.select` 已删除；`--no-pool-selection` 仅控制演化中的随机子代替换，不影响初始化。
 
 ## 1.2 Train 评价
 

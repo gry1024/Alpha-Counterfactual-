@@ -215,6 +215,9 @@ def load_alpha_pool(raw) -> Tuple[List[Expression], List[float]]:
         weights = raw['weights']
     else:
         weights = None
+    if raw.get('expression_engine') == 'alphaagent_pandas_v1':
+        from alpha_cf.alphaagent_expression import AlphaAgentExpression
+        return [AlphaAgentExpression(s, raw.get('signal_start', '2015-01-01')) for s in exprs_raw], weights
     exprs = [eval(expr_raw.replace('open', 'open_').replace('$', '')) for expr_raw in exprs_raw]
     return exprs, weights
 

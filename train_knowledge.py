@@ -109,7 +109,7 @@ if __name__ == '__main__':
     parser.add_argument("--icir_decay_threshold", type=float, default=0.7)
     parser.add_argument('--threshold_ric', type=float, default=0.015, help="Threshold ic during testing")
     parser.add_argument('--threshold_ricir', type=float, default=0.15)
-    parser.add_argument('--n_factors', type=int, default=15,
+    parser.add_argument('--n_factors', type=int, default=20,
                         help='Maximum number of factors to select at each step.')
     parser.add_argument('--chunk_size', type=int, default=180,
                         help='Chunk size for calculating Spearman correlation.')

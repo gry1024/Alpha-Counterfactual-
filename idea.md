@@ -1,4 +1,12 @@
-# AlphaCREAM: Counterfactual Reasoning and Evidence-Guided Evolution for Alpha Mining
+# AlphaCREAM: Hypothesis-Guided Alpha Mining with Counterfactual Program Evaluation
+
+## 术语边界（2026-10-25，文献与实现核对）
+
+本项目的反事实对象是**因子程序的计算组件**：提出可执行替代表达式，并在相同历史Train数据、相同收益标签下对比预测质量与池贡献。金融学中的政策/市场因果反事实、结构经济模型反事实，以及实例级反事实解释是不同的问题设定。当前实现没有市场数据生成模型、潜在结果识别、市场样本生成或偏好参数训练，因此不以Pearl SCM/do形式化作为金融理论基础，也不将指标差异解释为金融机制的因果效应。
+
+保留的创新定位：假设驱动的程序比较提供超越整体因子分数的实测反馈，链记忆将这些比较及成功/失败修订用于后续干预设计和因子演化。Counterfactual evaluation在本文特指这一program-level操作。金融解释提供假设，实测验证的是具体表达式变化的预测后果。
+
+详细文献与修改依据见 manuscript/www/COUNTERFACTUAL_CONCEPT_AUDIT_20261025.md。以下实现步骤与配置继续沿用；程序接口、日志字段与已记录提示词未改动。
 
 ## 研究动机
 
@@ -24,9 +32,9 @@ $$
 
 同时，高质量 Alpha 往往依赖多个结构组件之间的组合关系，仅围绕单个算子、窗口或 subtree 进行局部搜索，难以产生足够大的结构跃迁。
 
-因此，本工作将 **Structural Counterfactual Reasoning** 用于机制级反事实推理，并与 evolutionary search 结合：
+因此，本工作将 **Counterfactual Program Evaluation** 用于比较计算组件的可执行替代，并与 evolutionary search 结合：
 
-> **Counterfactual reasoning 识别有效机制，Evolutionary search 在机制层面进行新的结构探索。**
+> **程序比较提供组件级实测证据，Evolutionary search 利用证据与链记忆进行结构探索。**
 
 整体流程为：
 
@@ -97,8 +105,8 @@ $$
 
 其中：
 
-- $\Delta_i^{\mathrm{cf}}<0$：编辑后个体预测能力下降，该机制当前具有正贡献；
-- $\Delta_i^{\mathrm{cf}}\approx0$：该机制贡献有限；
+- $\Delta_i^{\mathrm{cf}}<0$：此次替代使个体预测能力下降；结论针对本次变体、数据和评价；
+- $\Delta_i^{\mathrm{cf}}\approx0$：本次变体的个体质量变化有限；
 - $\Delta_i^{\mathrm{cf}}>0$：编辑后表现改善，该结构可被进一步重构。
 
 这些量只是真实数据上的结构证据，不附带预设处置标签，也不限定后续演化操作：
@@ -498,7 +506,7 @@ $$
 
 Validation / Test 切分由 `run_adaptive_combination.py` 按 `--train_end_year 2021` 内部处理，AlphaCREAM 不单独维护 valid 集合。
 
-初始化（round 0）及每轮保存后，工作池使用冻结的 Train OLS 权重交给 `run_adaptive_combination.py`，分别评价 Validation 和 Test，仅记录，不参与搜索决策。全部指标保存为 `pool_<round>.metrics.json` 并追加到 `res.txt`；`adaptive_combination.png` 展示两组 IC、RankIC、收益、ICIR、RankICIR、Sharpe 随轮次的变化，`profit_curves.png` 展示当前轮两组累计收益。最后一轮池直接作为最终池：
+初始化（round 0）及每轮保存后，工作池使用冻结的 Train OLS 权重交给 `run_adaptive_combination.py`，分别评价 Validation 和 Test，仅记录，不参与搜索决策。全部指标保存为 `pool_<round>.metrics.json` 并追加到 `res.txt`；`adaptive_combination.png` 仅绘制 Test 的全部 11 项指标随轮次变化（IC、RankIC、收益、ICIR、RankICIR、Sharpe、三项标准差、RETIR、最大回撤）；`profit_curves.png` 仅绘制当前轮 Test 累计收益。最后一轮池直接作为最终池：
 
 $$
 P_G
@@ -546,12 +554,13 @@ $$
 
 主实验覆盖 CSI300、CSI500、CSI1000；正文收益曲线只展示 CSI300，CSI500/CSI1000 收益曲线放附录；Alpha158、GP、AlphaGen、AlphaForge、AlphaQCM、AlphaSAGE、AlphaPROBE、AlphaAgent、AlphaCREAM。指标为 IC、ICIR、RIC、RICIR、AR、MDD、SR。
 
-消融实验仅在 CSI300 上进行；预测指标和组合回测指标合并在同一张表中。两组消融共享 Full，共 8 个版本：
-- 组件组：无反事实实测证据、无机制记忆、w/o pool-aware selection（β=0 且取消正信用门槛）。
-- 评分组：α=0、β=0、γ=0、λ=0；均保留录取门槛。β=0 保留正信用门槛，γ=0 保留相关性硬上限。
+AlphaAgent 额外组合实验：保留原验证反馈选出的三个因子对照，并将同一条搜索链前五轮的全部 15 个候选去重合池，用现有动态组合入口评价。该实验记作 AlphaAgent 候选因子 + CF 动态组合，不视为原论文的完整复现；因子按来源轮次全部收录，不根据 Test 挑选。表达式转换与运行方式见 `plans/08_AlphaAgent_Evaluation.md`，不改变 AlphaCREAM 主方法的冻结 Train 权重设置。
 
+CSI500 的单轮对照按五轮候选的 2022 验证集含成本年化超额收益选择第五轮三个因子，同时保留五轮全部 15 个候选的合池对照；该选择不等于官方反馈接受（五轮均未替换基线），不使用最终 Test 作选择。
 
-`--no-pool-selection` 同时将 β 设为 0 并取消正信用门槛，保留反事实推理 pool 证据和父选择。旧 `--no-pool-credit` 仅兼容历史运行，不进入本次论文消融表。
+消融实验仅在 CSI300 上进行；当前论文采用 Counterfactual evidence / Mechanism memory / Offspring selection 五行模块矩阵：×××、√××、√√×、√×√、√√√。七项指标顺序为 IC、ICIR、RIC、RICIR、AR、MDD、SR，实际来源以 result.md 为准。五行均为 seed=0、最终第 20 轮；Full 因 429 仅完成 166 次决策，其他各 200 次；最低条件 llm-only 额外改变父选择及数值反馈，不能作严格的纯证据归因。评分项单独设零与敏感性另行规划，不混入当前模块表；β=0 保留正信用门槛，γ=0 保留相关性硬上限。
+
+`--no-pool-selection`：从语法与结构合法且精确去重后的子代中均匀随机抽取一个，不计算未抽中子代的指标，不使用四项评分、相关性/正信用门槛或信号等价分组；仅抽中后检查数值可用性并为后续轮次计算指标，不因表现差拒绝。抽中者不可用或无新子代时保留父代，不重抽。保留反事实证据、记忆和父选择。日志标记 `selection_policy=uniform_random_v1`；旧 β=0+取消信用门槛的结果不属于新版随机消融。旧 `--no-pool-credit` 仅兼容历史运行，不进入本次论文消融表。
 
 敏感性：CSI300 上分别将 α、β、γ、λ 设为各自默认值的 0.25/0.5/1/2/4 倍，其他权重保持默认值；零权重由消融覆盖。主实验表报告三个市场；消融仅报告 CSI300；CSI500/CSI1000 收益曲线放附录。论文采用 ARR 官方 ACL 模板，完整设置见 manuscript/www/PAPER_OUTLINE.md。
 
@@ -574,3 +583,9 @@ $$
 即从公式级搜索进一步转向：
 
 > **基于结构证据的机制级 Alpha Discovery。**
+
+`--llm-only` 是独立的最低条件配置：自动开启 `--no-cf-evidence --no-pool-credit --no-memory --no-pool-selection`，另外均匀随机选择父代，不使用删除信用；LLM 的父代 RankIC 设为 null，不提供任何历史评分/录取反馈。仍保留当前公式、AST、算子说明、结构限制与 LLM 自己提出的未测量机制；子代均匀随机替换。初始池和抽中因子的数值可用性检查、OLS 权重及 Validation/Test 报告仍执行，但结果不参与生成或选择。日志标记 `search_policy=llm_only_v1`。这是多组件联合移除的最低条件对照，不用于单独归因某一个组件。
+
+论文 Introduction 与 Related Work 已补写；叙述围绕生成子代之前的机制假设、预测、结构替代与多层证据，不把结构感知、祖先历史、记忆或组合效用本身称为首次创新。相关工作与 AlphaSAGE、AlphaPROBE、AlphaMemo、FactorMiner 等原文核对；评价与消融尚未完成的部分不宣称实证优势。写作依据见 manuscript/www/RELATED_WORK_MAP.md，完整中文见 manuscript/www/INTRO_RELATED_ZH.md。
+
+论文引言贡献归并为两项：机制级反事实推理、结合机制记忆的证据引导演化。多层证据与组合选择分别归入这两项；三市场评价及消融只用于验证，不列为独立贡献。

@@ -54,7 +54,7 @@ signal_distance 使用完整 Train 上的平均并列秩归一化信号。将信
 
 - `--no-cf-evidence`：保留反事实推理提案，不执行实测。
 - `--no-memory`：保留当前证据，不提供历史。
-- `--no-pool-selection`：w/o pool-aware selection，β=0 且取消正信用门槛；保留反事实 pool 证据和父选择。
+- `--no-pool-selection`：w/o offspring selection，从语法与结构合法且精确去重后的子代中均匀随机抽取一个，不计算未抽中子代的指标，不使用四项评分、相关性/正信用门槛或信号等价分组；仅抽中后检查数值可用性并为后续轮次计算指标，不因表现差拒绝。抽中者不可用或无新子代时保留父代，不重抽。保留反事实证据、记忆和父选择。旧版结果不可混用。
 - `--alpha 0` / `--beta 0` / `--gamma 0` / `--cost-weight 0`：分别删除一个评分项，保留录取门槛。
 - `--no-pool-credit`：仅保留历史兼容，不用于当前论文消融。
 
@@ -64,3 +64,10 @@ signal_distance 使用完整 Train 上的平均并列秩归一化信号。将信
 新逻辑集中于 alpha_cf；不引入额外搜索框架、向量库、参数枚举或最终重选阶段。
 
 论文消融实验仅在 CSI300 上进行，七项预测与组合回测指标统一展示；CSI500、CSI1000 用于主实验及补充收益曲线。
+
+`--llm-only` 是独立的最低条件配置：自动开启 `--no-cf-evidence --no-pool-credit --no-memory --no-pool-selection`，另外均匀随机选择父代，不使用删除信用；LLM 的父代 RankIC 设为 null，不提供任何历史评分/录取反馈。仍保留当前公式、AST、算子说明、结构限制与 LLM 自己提出的未测量机制；子代均匀随机替换。初始池和抽中因子的数值可用性检查、OLS 权重及 Validation/Test 报告仍执行，但结果不参与生成或选择。日志标记 `search_policy=llm_only_v1`。这是多组件联合移除的最低条件对照，不用于单独归因某一个组件。
+
+
+## 当前论文模块矩阵（2026-10-20）
+
+CE/MM/OS 分别表示 Counterfactual evidence、Mechanism memory、Offspring selection；当前五行是 ×××、√××、√√×、√×√、√√√，七项 Test 指标和日志来源以 result.md 为准。CSI300 Full 已统一为 seed=0、20 轮的 20261020_010800_360523_csi300_0_MiniMax-M3。Full 受限流影响完成 166 次替换决策，其他四组各 200 次；llm-only 还改变父代抽样和数值反馈，论文保留这些限制。评分项逐项消融及敏感性独立待补，本次没有修改搜索或回测实现。

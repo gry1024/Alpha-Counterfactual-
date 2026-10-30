@@ -174,5 +174,5 @@ AlphaGen、AlphaCREAM需使用`--use_weights True`。
 python plot_profit_curve.py
 ```
 
-需在 `plot_profit_curve.py` 登记 `ret_s.npy` 路径
+需在 `plot_profit_curve.py` 登记 `ret_s.npy` 路径。输出各市场的 PNG 与 PDF；参考 AlphaSAGE 图（`img/backtest.png`）的横向布局、衬线字体及柔和配色，不显示市场标题，Ours 为柔和红色实线，指数为黑色虚线。所有曲线统一采用 7 个交易日的居中三角加权平滑，仅用于展示，保留首尾值；原始收益文件及统计计算不变。`SMOOTH_WINDOW=1` 可关闭平滑。
 

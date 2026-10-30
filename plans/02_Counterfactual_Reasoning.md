@@ -60,3 +60,5 @@ delta_cf, pool_credit, signal_distance, coverage_change, common_rank_correlation
 `--no-cf-evidence` 保留理解与语义提案，全部实测指标均 null；
 本轮证据直接传给演化；替换或保留决定完成后，与全部子代提案和决定一起追加到该链历史。
 空机制与未测量的轮次也记录，详见 [机制记忆](04_Mechanism_Memory.md)。
+
+`--llm-only` 是独立的最低条件配置：自动开启 `--no-cf-evidence --no-pool-credit --no-memory --no-pool-selection`，另外均匀随机选择父代，不使用删除信用；LLM 的父代 RankIC 设为 null，不提供任何历史评分/录取反馈。仍保留当前公式、AST、算子说明、结构限制与 LLM 自己提出的未测量机制；子代均匀随机替换。初始池和抽中因子的数值可用性检查、OLS 权重及 Validation/Test 报告仍执行，但结果不参与生成或选择。日志标记 `search_policy=llm_only_v1`。这是多组件联合移除的最低条件对照，不用于单独归因某一个组件。

@@ -29,7 +29,8 @@ signal_distance 使用覆盖修正的完整排名相关距离 [0,1]；等价分�
 每次解码或协议失败，下一次 prompt 加入上一次具体错误（包括 JSON 行列位置），要求修正并返回合规 JSON。
 
 每个返回公式写 proposal（含 parent_id、parent、expression、description、evidence_refs），
-随后 parse → AST 合法性检查 → Train 数值评价 → 精确去重。
+正常模式随后 parse → AST 合法性检查 → Train 数值评价 → 精确去重。
+`--no-pool-selection` 只 parse、检查结构并精确去重，不评价全部子代；抽样策略与抽中后数值检查见工作池更新。
 公式不自动翻转符号。无效或重复公式跳过，其描述仍保留在 proposal 日志；
 有效新候选的描述按规范化表达式关联，写入 replacement/lineage 的 candidates.description，
 入池者另写 child_description。未入池候选不用于其他 parent 的替换。
@@ -51,4 +52,4 @@ save()
 
 终端与既有日志保存 understanding、updated_understanding、机制预测及证据引用；下一轮反事实推理复用上一轮理解。终端输出 parent、机制/记忆记录数、每个 proposal 的说明与评价结果，以及重复或无效公式的跳过原因。
 
-评分提示词注入本次真实权重及门槛状态，使用原始分量加权评分。
+正常评分提示词注入真实权重及门槛；随机替换模式提示词明确等概率抽取及不做质量筛选，不再向 LLM 宣称子代按分数竞争。

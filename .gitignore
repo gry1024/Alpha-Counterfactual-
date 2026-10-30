@@ -222,6 +222,7 @@ grid_search_config.py
 
 # paper
 papers/
+/theory/
 manuscript/
 tmp/
 output/
@@ -243,3 +244,10 @@ profit_curve_csi300.pdf
 profit_curve_csi1000.png
 profit_curve_csi500.png
 profit_curve_csi300.png
+# Local editor settings and presentation build artifacts
+/.obsidian/
+/slides_ppt/
+/cf-framework-overview-rebuilt.pptx
+/img/_ov_grid_*.png
+/img/_overview_*.png
+/img/_text_montage_*.png

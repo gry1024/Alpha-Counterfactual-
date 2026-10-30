@@ -102,6 +102,38 @@ Return only {{"understanding":"Up to 3 short sentences",
 "reason":"Hypothesis being tested and predicted effect"}}]}}.
 """
 
+SELECTION_SCORED = """
+Each child is backtested on Train. A child can update the pool only if its maximum mean
+absolute daily Spearman correlation with peers is <= {correlation_threshold}; peers exclude
+the original parent. Require positive pool credit: {require_pool_credit}.
+When true, every child must have pool_credit > 0.000001; when false, this gate is disabled.
+Active hard gates apply to equivalent simplifications too, before grouping; there is no zero-credit
+simplification exception. The parent remains the retention baseline without filtering.
+The parent and children passing the active gates are grouped by
+complete normalized-rank equivalence (identical finite masks, equal ranks or a consistent
+global reversal within absolute tolerance 0.000001). Each group keeps its simplest formula;
+equal complexity preserves proposal order, with the parent first.
+All representatives compete using S = alpha*|R| + beta*C_pool + gamma*diversity
++ lambda*(1-turnover), using the raw component values without candidate-set scaling.
+Weights in that order: {score_weights}. They are fixed during search.
+C_pool compares full-Train fitted and evaluated OLS combinations; diversity and credit use
+the current pool excluding the original parent. A distinct-signal group must strictly beat
+the parent group's representative score. The highest score wins; ties prefer fewer nodes,
+then original order. Without an improvement the parent group keeps its simplest formula.
+Simplification never bypasses stronger improvement candidates. Complexity counts AST nodes,
+excluding a single outer sign wrapper. Negative Train R does not require a direction wrapper.
+"""
+
+SELECTION_RANDOM = """
+After syntax, structural-limit and exact-duplicate checks, one child is drawn
+uniformly at random to replace its parent. All four selection scores, pool-credit
+and correlation gates, and signal-equivalence grouping are disabled. Children are
+not measured before the draw. Only the drawn child is measured for executability
+and subsequent rounds; poor predictive quality does not reject it. If that child
+is unusable, retain the parent without resampling. With no valid new child, retain
+the parent. Evidence, memory and parent scheduling follow their respective experiment settings.
+"""
+
 PROMPT_EVOLUTION = """
 First return updated_understanding in at most 3 short sentences. Compare the initial understanding and counterfactual
 predictions with measured evidence, citing current mechanism IDs (m1, m2,
@@ -133,25 +165,8 @@ Use both successful and rejected attempts. An empty history means this chain has
 evolved before, unless memory is disabled. Historical credits belong to their original
 factor and pool context; do not assume they carry unchanged to the current parent.
 
-Each child is backtested on Train. A child can update the pool only if its maximum mean
-absolute daily Spearman correlation with peers is <= {correlation_threshold}; peers exclude
-the original parent. Require positive pool credit: {require_pool_credit}.
-When true, every child must have pool_credit > 0.000001; when false, this gate is disabled.
-Active hard gates apply to equivalent simplifications too, before grouping; there is no zero-credit
-simplification exception. The parent remains the retention baseline without filtering.
-The parent and children passing the active gates are grouped by
-complete normalized-rank equivalence (identical finite masks, equal ranks or a consistent
-global reversal within absolute tolerance 0.000001). Each group keeps its simplest formula;
-equal complexity preserves proposal order, with the parent first.
-All representatives compete using S = alpha*|R| + beta*C_pool + gamma*diversity
-+ lambda*(1-turnover), using the raw component values without candidate-set scaling.
-Weights in that order: {score_weights}. They are fixed during search.
-C_pool compares full-Train fitted and evaluated OLS combinations; diversity and credit use
-the current pool excluding the original parent. A distinct-signal group must strictly beat
-the parent group's representative score. The highest score wins; ties prefer fewer nodes,
-then original order. Without an improvement the parent group keeps its simplest formula.
-Simplification never bypasses stronger improvement candidates. Complexity counts AST nodes,
-excluding a single outer sign wrapper. Negative Train R does not require a direction wrapper.
+{selection_policy}
+
 
 For each child, return its final expression, evidence_refs listing current mechanism IDs,
 and a brief description (1-2 sentences): connect the updated understanding to the change
@@ -163,8 +178,8 @@ the new formula is still an untested hypothesis. Reference actual supplied measu
 Do not invent measurements or prescribe an operation category. Check syntax,
 dimensional meaning, denominators and expression
 limits. Avoid exact duplicates of the current pool or previously generated children.
-Existing measured evidence need not transfer unchanged to a new context, so all children
-will be evaluated.
+Existing measured evidence need not transfer unchanged to a new context.
+Follow the child replacement policy above when evaluating new formulas.
 
 Parent and evidence: {parent}
 This factor chain's complete past evolution history: {historical_memory}

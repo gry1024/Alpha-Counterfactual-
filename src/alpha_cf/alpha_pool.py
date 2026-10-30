@@ -1,5 +1,6 @@
 """Signed RankIC, direct seed loading and per-parent replacement."""
 from copy import copy
+import random
 import numpy as np
 import torch
 from alphagen.utils.correlation import batch_pearsonr
@@ -147,10 +148,32 @@ class AlphaCFPool:
         index = next(i for i, e in enumerate(self.exprs) if str(e) == str(parent))
         peers = self.exprs[:index] + self.exprs[index + 1:]
         existing = {str(e) for e in self.exprs}
+        children = [c for c in {str(c): c for c in offspring}.values() if str(c) not in existing]
+        if getattr(self.args, "no_pool_selection", False):
+            drawn = random.choice(children) if children else None
+            winner, error = drawn, None
+            # Only the drawn formula is measured, after the random decision. An
+            # unusable draw retains the parent without resampling or quality gates.
+            if drawn is not None:
+                try:
+                    self.evaluate(drawn)
+                except (ValueError, IndexError) as exc:
+                    winner, error = None, str(exc)
+            if winner is not None:
+                self.exprs[index] = winner
+            return dict(parent=str(parent), parent_score=None, parent_group_score=None,
+                        parent_components=None, selection_policy="uniform_random_v1",
+                        drawn_child=str(drawn) if drawn is not None else None,
+                        evaluation_error=error,
+                        reason="invalid_random_offspring" if error else "random_offspring"
+                               if winner is not None else "no_new_offspring",
+                        child=str(winner) if winner is not None else None,
+                        outcome="replaced" if winner is not None else "retained",
+                        candidates=[dict(expression=str(c), drawn=c is drawn,
+                                         selection_probability=1.0 / len(children)) for c in children])
+
         parent_nodes = complexity(parent)
         pool_utility = self.utility(self.exprs)
-
-        children = [c for c in {str(c): c for c in offspring}.values() if str(c) not in existing]
         for child in children:
             self.evaluate(child)
 
@@ -178,8 +201,7 @@ class AlphaCFPool:
 
         # Apply both update gates before canonicalizing equivalent children.
         correlation_ok = [True] + [1.0 - row[2] <= self.args.correlation_threshold for row in rows[1:]]
-        credit_ok = [True] + [getattr(self.args, "no_pool_selection", False) or row[1] > 1e-6
-                              for row in rows[1:]]
+        credit_ok = [True] + [row[1] > 1e-6 for row in rows[1:]]
         representatives = []
         allowed = [i for i in range(len(members)) if correlation_ok[i] and credit_ok[i]]
         for i in sorted(allowed, key=lambda i: (complexity(members[i]), i)):
@@ -188,8 +210,6 @@ class AlphaCFPool:
         values = np.asarray(rows, dtype=float)
         if not np.isfinite(values).all():
             raise ValueError("Nonfinite selection components")
-        if getattr(self.args, "no_pool_selection", False):
-            weights[1] = 0.0
         if not np.isfinite(weights).all() or (weights < 0).any() or not (weights > 0).any():
             raise ValueError("Selection weights must be finite, nonnegative and not all zero")
         scores = values @ weights

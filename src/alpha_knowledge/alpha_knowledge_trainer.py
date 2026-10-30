@@ -2,6 +2,9 @@ import torch
 import numpy as np
 import json
 import os
+import subprocess
+import sys
+from pathlib import Path
 import pandas as pd
 from alpha_knowledge.alpha_pool import AlphaKnowledgePool
 from alphagen.data.expression_knowledge_graph import ExpressionKnowledgeGraph, ExpressionNode
@@ -10,6 +13,7 @@ from alphagen.data.tree import ExpressionParser, InvalidExpressionException
 from alphagen_qlib.stock_data import StockData
 from alphagen.utils.correlation import batch_pearsonr, batch_spearmanr, batch_ret, batch_sharpe_ratio, batch_max_drawdown
 from gan.utils.builder import exprs2tensor
+from alpha_cf.plot import plot_metrics
 
 from typing import List, Tuple, Optional, Set, Any
 from openai import OpenAI
@@ -268,165 +272,23 @@ class AlphaKnowledgeLogger:
         self.log_dir = log_dir
         self.args = args
     
-    def load_test_res(self, pool: AlphaKnowledgePool, file: Any) -> None:
-        state = pool.state
-        exprs = state.get('exprs', [])
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(self.args.cuda)
-        QLIB_PATH = "data/qlib_data/us_data_qlib_latest" if self.args.instruments == 'sp500' else "data/qlib_data/cn_data_rolling"
-        close = exp_module.Feature(exp_module.FeatureType.CLOSE)
-        target = exp_module.Ref(close, - 20) / close - 1
-        train_end_time = f'2020-12-31'
-        valid_start_time = f'2021-01-01'
-        valid_end_time = f'2022-06-30'
-        test_start_time = f'2023-05-01'
-        test_end_time = f'2026-04-30'
-        data_all = StockData(instrument=self.args.instruments, start_time='2010-01-01', end_time=test_end_time, qlib_path=QLIB_PATH)
-        data_valid = StockData(instrument=self.args.instruments, start_time=valid_start_time, end_time=valid_end_time, qlib_path=QLIB_PATH)
-        data_test = StockData(instrument=self.args.instruments, start_time=test_start_time, end_time=test_end_time, qlib_path=QLIB_PATH)
-        
-        fct_tensor = exprs2tensor(exprs, data_all, normalize=True)
-        tgt_tensor = exprs2tensor([target], data_all, normalize=False)
+    def load_test_res(self, pool: AlphaKnowledgePool, file: Any, iteration: int) -> dict:
+        root = Path(__file__).resolve().parents[2]
+        source = Path(self.log_dir).resolve() / f"pool_{iteration}.json"
+        metrics_path = source.with_suffix(".metrics.json")
+        command = [sys.executable, str(root / "run_adaptive_combination.py"),
+                   "--expressions_file", str(source), "--metrics_file", str(metrics_path),
+                   "--instruments", self.args.instruments, "--train_end_year", "2021"]
+        for name in ("cuda", "seed", "n_factors", "chunk_size", "window", "label_days",
+                     "threshold_ric", "threshold_ricir", "corr_threshold", "linear_dep_tol"):
+            command.extend(["--" + name, str(getattr(self.args, name))])
+        # Omit --use_weights: the evaluator defaults to False (type=bool cannot parse "False").
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(root / "src"), os.environ.get("PYTHONPATH", "")]))
+        subprocess.run(command, cwd=root, env=env, stdout=file, check=True)
+        results = json.loads(metrics_path.read_text())
+        print(pd.DataFrame(results).T.round(4))
+        return results["Test"]
 
-        # 3. Pre-calculate daily metrics for all factors
-        ic_list, ric_list, ret_list = [], [], []
-        print("Pre-calculating daily metrics for each factor...")
-        for i in tqdm(range(fct_tensor.shape[-1])):
-            factor_slice = fct_tensor[..., i]
-            target_slice = tgt_tensor[..., 0]
-            ic_s = batch_pearsonr(factor_slice, target_slice)
-            ric_s = chunk_batch_spearmanr(factor_slice, target_slice, chunk_size=self.args.chunk_size)
-            #ret_s = batch_ret(factor_slice, target_slice)
-            ic_list.append(torch.nan_to_num(ic_s, nan=0.))
-            ric_list.append(torch.nan_to_num(ric_s, nan=0.))
-            #ret_list.append(torch.nan_to_num(ret_s, nan=0.))
-
-        ic_s = torch.stack(ic_list, dim=-1)
-        ric_s = torch.stack(ric_list, dim=-1)
-        #ret_s = torch.stack(ret_list, dim=-1)
-        torch.cuda.empty_cache()
-
-        # 4. Main adaptive combination loop
-        pred_list = []
-        shift = self.args.label_days + 1  # To avoid lookahead bias
-        
-        dates = pd.DatetimeIndex(data_all._dates[data_all.max_backtrack_days:data_all.max_backtrack_days + data_all.n_days])
-        valid_m = np.asarray((dates >= valid_start_time) & (dates <= valid_end_time))
-        test_m = np.asarray((dates >= test_start_time) & (dates <= test_end_time))
-        eval_idx = np.flatnonzero(valid_m | test_m)
-        
-        print("Starting adaptive combination process...")
-        pbar = tqdm(eval_idx)
-        for cur in pbar:
-            # Define rolling window for evaluation
-            # begin = 0 if not np.isfinite(self.args.window) else max(0, cur - self.args.window - shift)
-            begin = 0
-            # Slice metrics for the current window
-            cur_ic = ic_s[begin:cur-shift]
-            cur_ric = ric_s[begin:cur-shift]
-            
-            # Calculate performance metrics over the window
-            ic_mean = cur_ic.mean(dim=0)
-            ic_std = cur_ic.std(dim=0)
-            ric_mean = cur_ric.mean(dim=0)
-            ric_std = cur_ric.std(dim=0)
-
-            icir = ic_mean / ic_std
-            ricir = ric_mean / ric_std
-            
-            # Filter and select best factors
-            metrics_df = pd.DataFrame({
-                'ric': ric_mean.cpu().numpy(),
-                'ricir': ricir.cpu().numpy()
-            })
-            good_factors = metrics_df[(metrics_df['ric'].abs() > self.args.threshold_ric) & (metrics_df['ricir'].abs() > self.args.threshold_ricir)]
-            if len(good_factors) < 1:
-                good_factors = metrics_df.reindex(metrics_df.ricir.abs().sort_values(ascending=False).index).iloc[:1]
-            
-            good_idx = good_factors.iloc[:self.args.n_factors].index.to_list()
-            
-            # Prepare data for linear regression
-            x = fct_tensor[begin:cur-shift, :, good_idx]
-            y = tgt_tensor[begin:cur-shift, :, :]
-            to_pred = fct_tensor[cur, :, good_idx]
-            y = y.reshape(-1, y.shape[-1])
-            x = x.reshape(-1, x.shape[-1])
-            
-            # Filter out NaNs
-            valid_mask = torch.isfinite(y)[:, 0]
-            y = y[valid_mask]
-            x = x[valid_mask]
-            
-            to_pred = torch.nan_to_num(to_pred, nan=0.)
-            
-            # Remove linearly dependent columns (factors) for speed
-            x, to_pred, selected_factors = remove_linearly_dependent_cols(x, to_pred, tol=self.args.linear_dep_tol)
-            
-            # Remove linearly dependent rows (samples) for speed  
-            x, y, to_pred, selected_rows = remove_linearly_dependent_rows(x, y, to_pred, tol=self.args.linear_dep_tol)
-            
-            # Add constant for intercept
-            ones = torch.ones_like(x[..., 0:1])
-            x = torch.cat([x, ones], dim=-1)
-            ones_pred = torch.ones_like(to_pred[..., 0:1])
-            to_pred = torch.cat([to_pred, ones_pred], dim=-1)
-            
-            # Train regression and predict with improved stability
-            try:
-                # Check condition number before solving
-                coef = torch.linalg.lstsq(x, y).solution
-                
-                pred = to_pred @ coef
-                
-            except Exception as e:
-                print(f"Warning: Regression failed with error {e}, using zero prediction")
-                # Handle singular matrix case
-                pred = torch.zeros_like(to_pred[:, 0:1])
-
-            pred_list.append(pred[:, 0])
-            
-            # Update progress bar description with running IC
-            if len(pred_list) > 1:
-                running_preds = torch.stack(pred_list, dim=0)
-                running_targets = tgt_tensor[eval_idx[:len(pred_list)], :, 0]
-                running_ic = batch_pearsonr(running_preds, running_targets).mean().item()
-                pbar.set_description(f"Running IC: {running_ic:.4f}, Factors selected: {len(good_idx)}")
-
-
-        # 5. Evaluate and display results
-        print("\n" + "="*50)
-        print("Adaptive combination finished. Calculating final metrics...")
-        
-        all_pred = torch.stack(pred_list, dim=0)
-        
-        # Slice predictions and targets for validation and test sets
-        pred_valid = all_pred[torch.as_tensor(valid_m[eval_idx], device=all_pred.device)]
-        pred_test = all_pred[torch.as_tensor(test_m[eval_idx], device=all_pred.device)]
-        
-        tgt_valid = tgt_tensor[np.flatnonzero(valid_m), :, 0]
-        tgt_test = tgt_tensor[np.flatnonzero(test_m), :, 0]
-        
-        # Calculate metrics
-        valid_results, _ = get_tensor_metrics(pred_valid.cuda(), tgt_valid.cuda(), 0, self.args)
-        test_results, ret_s = get_tensor_metrics(pred_test.cuda(), tgt_test.cuda(), 0, self.args)
-        ret_s = ret_s.cpu().numpy()
-        # Format and print results
-        results_df = pd.DataFrame([valid_results, test_results], index=['Validation', 'Test'])
-        print("\n--- Final Performance Metrics ---")
-        
-        # Print with full precision and no truncation
-        pd.set_option('display.max_columns', None)
-        pd.set_option('display.width', None)
-        pd.set_option('display.max_colwidth', None)
-        print(results_df.round(4))
-        
-        # Also print in a more parseable format
-        file.write("\n--- Parseable Format ---")
-        file.write(f"{'Dataset':<12} {'IC':>8} {'IC_STD':>8} {'ICIR':>8} {'RIC':>8} {'RIC_STD':>8} {'RICIR':>8} {'RET':>8} {'RET_STD':>8} {'RETIR':>8} {'RET_SR':>8} {'RET_MDD':>8}\n")
-        for index, row in results_df.iterrows():
-            file.write(f"{index:<12} {row['ic']:>8.4f} {row['ic_std']:>8.4f} {row['icir']:>8.4f} {row['ric']:>8.4f} {row['ric_std']:>8.4f} {row['ricir']:>8.4f} {row['ret']:>8.4f} {row['ret_std']:>8.4f} {row['retir']:>8.4f} {row['ret_sharpe']:>8.4f} {row['ret_mdd']:>8.4f}")
-        
-        file.write("="*50)
-    
     def log(self, pool: AlphaKnowledgePool, graph: ExpressionKnowledgeGraph, iteration: int):
         print(f"=== Logging at iteration {iteration} ===")
         pool_path = os.path.join(self.log_dir, f'pool_{iteration}.json')
@@ -462,7 +324,12 @@ class AlphaKnowledgeLogger:
             print(f'>> Best single ic: {np.max(pool.single_ics[:pool.size]):.4f}')
         print('---------------------------------------------')
         with open(os.path.join(self.log_dir, f'res.txt'), 'a+') as f:
-            self.load_test_res(pool, f)
+            results = self.load_test_res(pool, f, iteration)
+        metrics_path = os.path.join(self.log_dir, 'test_metrics.jsonl')
+        with open(metrics_path, 'a') as f:
+            f.write(json.dumps(dict(round=iteration, dataset="Test", **results)) + "\n")
+        plot_metrics(pd.read_json(metrics_path, lines=True),
+                     os.path.join(self.log_dir, 'adaptive_combination.png'))
 
 
 
@@ -490,8 +357,7 @@ class AlphaKnowledgeTrainer:
                     node = self.graph.search(expr.strip())
                     # if node is not None:
                     #     self.pool.register_expression_node(node)
-        ##TODO: set your model name
-        model_name = "MiniMax-M3"
+        model_name = os.getenv("OPENAI_MODEL_NAME", "MiniMax-M3")
         log_dir = os.path.join(
         'data/knowledge_logs',
         f'pool_{args.pool_capacity}',
@@ -504,7 +370,9 @@ class AlphaKnowledgeTrainer:
             api_key=os.getenv("OPENAI_API_KEY", ""),
             base_url=os.getenv("OPENAI_BASE_URL", "")
         )
-        self.model = OpenAIModel(model_name,"", 400000)
+        llm_max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "16384"))
+        self.model = OpenAIModel(model_name, "", llm_max_tokens, request_max_tokens=llm_max_tokens)
+        print(f'[llm] model={model_name}, max_tokens={llm_max_tokens}', flush=True)
     
 
 ## qwen3-235b-a22b-thinking-2507 deepseek-r1
