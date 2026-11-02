@@ -122,11 +122,11 @@ def run(args):
     test_end_time = '2026-04-30'
 
     data_all = StockData(instrument=args.instruments,
-                         start_time='2010-01-01',
+                         start_time='2015-01-01',
                          end_time=test_end_time,
                          qlib_path=QLIB_PATH)
     data = StockData(instrument=args.instruments,
-                     start_time='2010-01-01',
+                     start_time='2015-01-01',
                      end_time=train_end_time,
                      qlib_path=QLIB_PATH)
     data_valid = StockData(instrument=args.instruments,
