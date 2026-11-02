@@ -28,7 +28,7 @@ RUNS: dict = {
         "AlphaGen": {"path": "data/ppo_logs/pool_20/ppo_csi300_20_0-20260905132532/ppo_csi300_20_0_20260905132532/ret_s.npy", "data_start_date": "2023-05-01"},
         "Ours": {"path": "data/cf_logs/20261024_020903_733059_csi300_0_gd-mobile-deepseek-v4.1-flash-1017/ret_s.npy", "data_start_date": "2023-05-01"},
 
-        "AlphaAgent": "data/logs/alphaagent/csi300/validation_combiners_20261102/rankic_top26_441d/ret_s.npy",
+        "AlphaAgent": "data/logs/alphaagent/csi300/validation_combiners_20261102/rankicir_top14_1260d_volblend/ret_s.npy",
         "CSI300 Index": {
             "path":            "data/index_real_logs/pool_all/real_csi300/ret_s.npy",
             "data_start_date": "2023-05-01",   # first entry in the .npy file
