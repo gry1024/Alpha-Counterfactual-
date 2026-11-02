@@ -26,8 +26,9 @@ RUNS: dict = {
         "AlphaSAGE": {"path": "data/gfn_logs/pool_50/gfn_gnn_csi300_50_2-0.01-1.0-1.0-1.0-0.3-linear-0.0/ret_s.npy", "data_start_date": "2023-05-01"},
         "AlphaPROBE": {"path": "data/knowledge_logs/pool_50/kg_dag_and_bayesian_icir_and_mutl_new_no_decay_MiniMax-M3_5_csi300_0.5_7_50_0.9_50_20_0.006_True_True_False_True_0.7_0.1_0.05/adaptive_n20/round_20/ret_s.npy", "data_start_date": "2023-05-01"},
         "AlphaGen": {"path": "data/ppo_logs/pool_20/ppo_csi300_20_0-20260905132532/ppo_csi300_20_0_20260905132532/ret_s.npy", "data_start_date": "2023-05-01"},
-        "Ours": {"path": "data/cf_logs/20261013_225346_506634_csi300_0_MiniMax-M3/ret_s.npy", "data_start_date": "2023-05-01"},
+        "Ours": {"path": "data/cf_logs/20261024_020903_733059_csi300_0_gd-mobile-deepseek-v4.1-flash-1017/ret_s.npy", "data_start_date": "2023-05-01"},
 
+        "AlphaAgent": "data/logs/alphaagent/csi300/validation_combiners_20261102/rank_top3/ret_s.npy",
         "CSI300 Index": {
             "path":            "data/index_real_logs/pool_all/real_csi300/ret_s.npy",
             "data_start_date": "2023-05-01",   # first entry in the .npy file
@@ -47,6 +48,7 @@ RUNS: dict = {
         "AlphaPROBE": "data/knowledge_logs/pool_50/kg_dag_and_bayesian_icir_and_mutl_new_no_decay_MiniMax-M3_5_csi500_0.5_7_50_0.9_50_20_0.006_True_True_False_True_0.7_0.1_0.05/ret_s.npy",
         "AlphaGen": "data/ppo_logs/pool_20/ppo_csi500_20_0-20261013092950/ppo_csi500_20_0_20261013092950/ret_s.npy",
         "Ours": "data/cf_logs/20261014_171245_875336_csi500_1_MiniMax-M3/ret_s.npy",
+        "AlphaAgent": "data/logs/alphaagent/csi500/paper_deepseek_20261023/validation_zoo_v2_20261024/selected_zoo/ret_s.npy",
         "CSI500 Index": {
             "path": "data/index_real_logs/pool_all/real_csi500/ret_s.npy",
             "color": "#000000",
@@ -64,6 +66,7 @@ RUNS: dict = {
         "AlphaPROBE": "data/knowledge_logs/pool_50/kg_dag_and_bayesian_icir_and_mutl_new_no_decay_gd-mobile-deepseek-v4.1-flash-1017_5_csi1000_0.5_7_50_0.9_50_20_0.006_True_True_False_True_0.7_0.1_0.05/ret_s.npy",
         "AlphaGen": "data/ppo_logs/pool_20/ppo_csi1000_20_0-20261014201645/ppo_csi1000_20_0_20261014201645/ret_s.npy",
         "Ours": "data/cf_logs/20261024_224833_312713_csi1000_0_gd-mobile-deepseek-v4.1-flash-1017/ret_s.npy",
+        "AlphaAgent": "data/logs/alphaagent/csi1000/paper_deepseek_20261024/validation_zoo_v2_20261024/trial_best_union/ret_s.npy",
         "CSI1000 Index": {
             "path": "data/index_real_logs/pool_all/real_csi1000/ret_s.npy",
             "color": "#000000",
@@ -86,9 +89,10 @@ PALETTE: dict[str, str] = {
     "AlphaSAGE":  "#429E9B",
     "AlphaPROBE": "#E6AE46",
     "AlphaGen":   "#7CC5A1",
+    "AlphaAgent": "#6B6B6B",
     "Ours":       "#C8324A",
 }
-LEGEND_ORDER = ("Ours", "AlphaSAGE", "AlphaPROBE", "AlphaGen", "AlphaQCM",
+LEGEND_ORDER = ("Ours", "AlphaAgent", "AlphaSAGE", "AlphaPROBE", "AlphaGen", "AlphaQCM",
                 "Alpha158", "GP", "XGBoost", "LightGBM")
 
 # Apply locally so importing this script does not restyle other figures.

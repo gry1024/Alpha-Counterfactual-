@@ -251,3 +251,7 @@ profit_curve_csi300.png
 /img/_ov_grid_*.png
 /img/_overview_*.png
 /img/_text_montage_*.png
+
+# local backups / exported data
+*.before_*
+export/

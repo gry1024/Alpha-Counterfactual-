@@ -101,6 +101,14 @@ def convert(text):
             return f"Sub(0,{visit(node.operand)})"
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
             args = [visit(arg) for arg in node.args]
+            if node.func.id == "TS_VAR" and len(args) == 2:
+                return f"Pow(TsStd({args[0]},{args[1]}),2)"
+            if node.func.id == "INV" and len(args) == 1:
+                return f"Div(1,{args[0]})"
+            if node.func.id == "COUNT" and len(args) == 2:
+                return f"TsSum({args[0]},{args[1]})"
+            if node.func.id == "SUMIF" and len(args) == 3:
+                return f"TsSum(Mul({args[0]},{args[2]}),{args[1]})"
             if node.func.id == "LOG" and len(args) == 1:
                 return f"Log(Add({args[0]},1))"
             if node.func.id == "EXP" and len(args) == 1:
