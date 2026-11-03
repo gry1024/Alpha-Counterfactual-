@@ -26,7 +26,7 @@ RUNS: dict = {
         "AlphaSAGE": {"path": "data/gfn_logs/pool_50/gfn_gnn_csi300_50_2-0.01-1.0-1.0-1.0-0.3-linear-0.0/ret_s.npy", "data_start_date": "2023-05-01"},
         "AlphaPROBE": {"path": "data/knowledge_logs/pool_50/kg_dag_and_bayesian_icir_and_mutl_new_no_decay_MiniMax-M3_5_csi300_0.5_7_50_0.9_50_20_0.006_True_True_False_True_0.7_0.1_0.05/adaptive_n20/round_20/ret_s.npy", "data_start_date": "2023-05-01"},
         "AlphaGen": {"path": "data/ppo_logs/pool_20/ppo_csi300_20_0-20260905132532/ppo_csi300_20_0_20260905132532/ret_s.npy", "data_start_date": "2023-05-01"},
-        "Ours": {"path": "data/cf_logs/20261024_020903_733059_csi300_0_gd-mobile-deepseek-v4.1-flash-1017/ret_s.npy", "data_start_date": "2023-05-01"},
+        "Ours": {"path": "data/cf_logs/20261013_225346_506634_csi300_0_MiniMax-M3/ret_s.npy", "data_start_date": "2023-05-01"},
 
         "AlphaAgent": "data/logs/alphaagent/csi300/validation_combiners_20261102/blend_a2_b45/ret_s.npy",
         "CSI300 Index": {
